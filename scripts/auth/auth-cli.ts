@@ -81,7 +81,7 @@ async function login(clientId: string, email: string, password: string): Promise
 
   console.log('\n=== Authentication Successful ===');
   console.log('ID Token (Use this for WebSocket $connect):');
-  console.log('\nresult:',authResult);
+  console.log('\nresult:', authResult);
   console.log(authResult.IdToken);
   console.log('\nExpires In (seconds):', authResult.ExpiresIn);
   console.log('Token Type:', authResult.TokenType);

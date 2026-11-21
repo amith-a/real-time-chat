@@ -47,72 +47,75 @@ echo "Artifact bucket: $BUCKET"
 echo "Running type-check..."
 npm run typecheck
 
-# 4. Build the Lambda bundle using esbuild
-echo "Building Lambda..."
+# 4. Build all Lambda bundles using esbuild
+echo "Building Lambda functions..."
 npm run build
 
-# 5. Package the Lambda bundle (checking OS for Windows zip compatibility)
-if [[ ! -f "dist/authorizer.js" ]]; then
-  echo "Build output dist/authorizer.js not found"
-  exit 1
-fi
+# 5. Package and upload a Lambda bundle, returning its S3 artifact key.
+# Logs go to stderr so command substitution captures only the artifact key.
+package_and_upload() {
+  local HANDLER="$1"
+  local SOURCE_PATH="$2"
+  local JS_FILE="dist/${SOURCE_PATH}.js"
+  local ZIP_FILE="dist/${HANDLER}.zip"
+  local HASH
+  local ARTIFACT_KEY
 
-echo "Packaging Lambda bundle into dist/authorizer.zip..."
-
-# Detect if running on Windows (Git Bash, MSYS, Cygwin, or native Windows)
-IS_WINDOWS=false
-case "$(uname -s 2>/dev/null || echo unknown)" in
-  CYGWIN*|MINGW*|MSYS*|Windows_NT*)
-    IS_WINDOWS=true
-    ;;
-esac
-if [[ "${OS:-}" == "Windows_NT" ]]; then
-  IS_WINDOWS=true
-fi
-
-# Create Lambda ZIP package
-(
-  cd dist
-  rm -f authorizer.zip
-
-  if command -v zip >/dev/null 2>&1; then
-    zip -j -X authorizer.zip authorizer.js
-
-  elif command -v powershell.exe >/dev/null 2>&1; then
-    powershell.exe -NoProfile -Command \
-      'Compress-Archive -Path authorizer.js -DestinationPath authorizer.zip -Force'
-
-  else
-    echo "Error: Install zip or ensure powershell.exe is available."
-    exit 1
+  if [[ ! -f "$JS_FILE" ]]; then
+    echo "Build output $JS_FILE not found" >&2
+    return 1
   fi
-)
 
-# 6. Generate a content-based artifact key
-if command -v sha256sum >/dev/null 2>&1; then
-  HASH=$(sha256sum dist/authorizer.zip | awk '{print $1}')
-elif command -v shasum >/dev/null 2>&1; then
-  HASH=$(shasum -a 256 dist/authorizer.zip | awk '{print $1}')
-elif command -v powershell.exe >/dev/null 2>&1; then
-  HASH=$(powershell.exe -NoProfile -Command "(Get-FileHash -Algorithm SHA256 dist/authorizer.zip).Hash.ToLower()" | tr -d '\r')
-else
-  echo "Error: No tool found to calculate sha256 hash"
-  exit 1
-fi
+  echo "Packaging ${HANDLER} Lambda from ${JS_FILE}..." >&2
 
-ARTIFACT_KEY="authorizer/${HASH}.zip"
-echo "Artifact key: $ARTIFACT_KEY"
+  (
+    cd dist
+    rm -f "${HANDLER}.zip"
 
-# 7. Upload the Lambda ZIP to S3
-echo "Uploading Lambda artifact..."
+    if command -v zip >/dev/null 2>&1; then
+      # Place the handler JavaScript at the ZIP root to match
+      # the CloudFormation Handler value (for example authorizer.handler).
+      zip -j -X "${HANDLER}.zip" "${SOURCE_PATH}.js" >/dev/null
+    elif command -v powershell.exe >/dev/null 2>&1; then
+      powershell.exe -NoProfile -Command \
+        "Compress-Archive -Path '${SOURCE_PATH}.js' -DestinationPath '${HANDLER}.zip' -Force"
+    else
+      echo "Error: Install zip or ensure powershell.exe is available." >&2
+      exit 1
+    fi
+  )
 
-aws s3 cp \
-  dist/authorizer.zip \
-  "s3://${BUCKET}/${ARTIFACT_KEY}" \
-  --region "$REGION" \
-  --sse AES256
+  if command -v sha256sum >/dev/null 2>&1; then
+    HASH=$(sha256sum "$ZIP_FILE" | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    HASH=$(shasum -a 256 "$ZIP_FILE" | awk '{print $1}')
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    HASH=$(powershell.exe -NoProfile -Command \
+      "(Get-FileHash -Algorithm SHA256 '$ZIP_FILE').Hash.ToLower()" | tr -d '\r')
+  else
+    echo "Error: No tool found to calculate SHA-256 hash." >&2
+    return 1
+  fi
 
-# 8. Deploy the application stack
+  ARTIFACT_KEY="${HANDLER}/${HASH}.zip"
+  echo "Uploading ${HANDLER} artifact: ${ARTIFACT_KEY}" >&2
+
+  aws s3 cp \
+    "$ZIP_FILE" \
+    "s3://${BUCKET}/${ARTIFACT_KEY}" \
+    --region "$REGION" \
+    --sse AES256 >/dev/null
+
+  printf '%s\n' "$ARTIFACT_KEY"
+}
+
+# Capture each function's content-based S3 key.
+AUTHORIZER_ARTIFACT_KEY=$(package_and_upload authorizer authorizer)
+CONNECT_ARTIFACT_KEY=$(package_and_upload connect connect)
+DISCONNECT_ARTIFACT_KEY=$(package_and_upload disconnect disconnect)
+DEFAULT_ARTIFACT_KEY=$(package_and_upload default default)
+
+# 6. Deploy the application stack
 echo "Deploying application stack..."
 
 aws cloudformation deploy \
@@ -121,7 +124,10 @@ aws cloudformation deploy \
   --parameter-overrides \
     Environment="$ENV" \
     ArtifactBucketName="$BUCKET" \
-    AuthorizerArtifactKey="$ARTIFACT_KEY" \
+    AuthorizerArtifactKey="$AUTHORIZER_ARTIFACT_KEY" \
+    ConnectArtifactKey="$CONNECT_ARTIFACT_KEY" \
+    DisconnectArtifactKey="$DISCONNECT_ARTIFACT_KEY" \
+    DefaultArtifactKey="$DEFAULT_ARTIFACT_KEY" \
   --capabilities CAPABILITY_NAMED_IAM \
   --region "$REGION" \
   --no-fail-on-empty-changeset

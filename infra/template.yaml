@@ -19,6 +19,18 @@ Parameters:
     Description: S3 object key for the authorizer ZIP
     Type: String
 
+  ConnectArtifactKey:
+    Description: S3 object key for the Connect Lambda ZIP
+    Type: String
+
+  DisconnectArtifactKey:
+    Description: S3 object key for the Disconnect Lambda ZIP
+    Type: String
+
+  DefaultArtifactKey:
+    Description: S3 object key for the Default Lambda ZIP
+    Type: String
+
 Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
@@ -82,7 +94,7 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource:
-                  - !Sub '${AuthorizerLogGroup.Arn}'
+                  - !GetAtt AuthorizerLogGroup.Arn
                   - !Sub '${AuthorizerLogGroup.Arn}:*'
 
   AuthorizerFunction:
@@ -103,6 +115,280 @@ Resources:
           USER_POOL_ID: !Ref UserPool
           USER_POOL_CLIENT_ID: !Ref UserPoolClient
 
+  WebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-websocket'
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: '$request.body.action'
+
+  WebSocketAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref WebSocketApi
+      Name: !Sub '${AWS::StackName}-authorizer'
+      AuthorizerType: REQUEST
+      IdentitySource:
+        - route.request.querystring.token
+      AuthorizerUri: !Sub
+        - 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations'
+        - FunctionArn: !GetAtt AuthorizerFunction.Arn
+
+  AuthorizerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt AuthorizerFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/authorizers/${AuthorizerId}'
+        - ApiId: !Ref WebSocketApi
+          AuthorizerId: !Ref WebSocketAuthorizer
+
+  ConnectExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-connect-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: ConnectLoggingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 
+                  - !GetAtt ConnectLogGroup.Arn
+                  - !Sub '${ConnectLogGroup.Arn}:*'
+
+  ConnectLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-connect'
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+
+  ConnectFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - ConnectLogGroup
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-connect'
+      Runtime: nodejs22.x
+      Handler: connect.handler
+      Timeout: 10
+      Role: !GetAtt ConnectExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref ConnectArtifactKey
+
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations'
+        - FunctionArn: !GetAtt ConnectFunction.Arn
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations'
+        - FunctionArn: !GetAtt DisconnectFunction.Arn
+
+  DefaultIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations'
+        - FunctionArn: !GetAtt DefaultFunction.Arn
+
+  ConnectInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ConnectFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$connect'
+        - ApiId: !Ref WebSocketApi
+
+  DisconnectInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt DisconnectFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$disconnect'
+        - ApiId: !Ref WebSocketApi
+
+  DefaultInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt DefaultFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$default'
+        - ApiId: !Ref WebSocketApi
+
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: '$connect'
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref WebSocketAuthorizer
+      Target: !Sub 'integrations/${ConnectIntegration}'
+  
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: '$disconnect'
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${DisconnectIntegration}'
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: '$default'
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${DefaultIntegration}'
+
+  WebSocketDeployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+      - ConnectRoute
+      - ConnectIntegration
+      - ConnectInvokePermission
+      - DisconnectRoute
+      - DisconnectIntegration
+      - DisconnectInvokePermission
+      - DefaultRoute
+      - DefaultIntegration
+      - DefaultInvokePermission
+    Properties:
+      ApiId: !Ref WebSocketApi
+      Description: "WebSocket API deployment v2"
+
+  WebSocketStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WebSocketApi
+      StageName: !Ref Environment
+      DeploymentId: !Ref WebSocketDeployment
+
+  DisconnectLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-disconnect'
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+
+  DisconnectExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-disconnect-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DisconnectLoggingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !GetAtt DisconnectLogGroup.Arn
+                  - !Sub '${DisconnectLogGroup.Arn}:*'
+
+  DisconnectFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - DisconnectLogGroup
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-disconnect'
+      Runtime: nodejs22.x
+      Handler: disconnect.handler
+      Timeout: 10
+      Role: !GetAtt DisconnectExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref DisconnectArtifactKey
+
+  DefaultLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-default'
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+
+  DefaultExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-default-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DefaultLoggingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !GetAtt DefaultLogGroup.Arn
+                  - !Sub '${DefaultLogGroup.Arn}:*'
+
+  DefaultFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - DefaultLogGroup
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-default'
+      Runtime: nodejs22.x
+      Handler: default.handler
+      Timeout: 10
+      Role: !GetAtt DefaultExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref DefaultArtifactKey
+
 Outputs:
   UserPoolId:
     Description: ID of the created Cognito User Pool
@@ -115,3 +401,11 @@ Outputs:
   AuthorizerFunctionArn:
     Description: ARN of the WebSocket Lambda Authorizer Function
     Value: !GetAtt AuthorizerFunction.Arn
+
+  WebSocketApiId:
+    Description: WebSocket API ID
+    Value: !Ref WebSocketApi
+
+  WebSocketEndpoint:
+    Description: WebSocket endpoint for the deployed stage
+    Value: !Sub 'wss://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
