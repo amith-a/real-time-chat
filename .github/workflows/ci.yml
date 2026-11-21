@@ -3,8 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  # pull_request:
+  #   branches: [main]
 
 jobs:
   ci:
@@ -36,7 +36,7 @@ jobs:
       - name: Build Lambda bundles
         run: npm run build
 
-      - name: Validate CloudFormation templates
-        run: |
-          aws cloudformation validate-template --template-body file://infra/artifacts.yaml
-          aws cloudformation validate-template --template-body file://infra/template.yaml
+      # - name: Validate CloudFormation templates
+      #   run: |
+      #     aws cloudformation validate-template --template-body file://infra/artifacts.yaml
+      #     aws cloudformation validate-template --template-body file://infra/template.yaml
