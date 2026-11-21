@@ -8,7 +8,7 @@ on:
 
 jobs:
   ci:
-    name: Build, Lint, Test & Synth
+    name: Lint, Typecheck, Test & Build
     runs-on: ubuntu-latest
 
     steps:
@@ -33,5 +33,10 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Synthesize CDK stack
-        run: npx cdk synth
+      - name: Build Lambda bundles
+        run: npm run build
+
+      - name: Validate CloudFormation templates
+        run: |
+          aws cloudformation validate-template --template-body file://infra/artifacts.yaml
+          aws cloudformation validate-template --template-body file://infra/template.yaml

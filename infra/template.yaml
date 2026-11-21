@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: Real-Time Chat infrastructure
+
+Parameters:
+  Environment:
+    Description: Deployment environment
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+
+  ArtifactBucketName:
+    Description: S3 bucket containing Lambda deployment artifacts
+    Type: String
+
+  AuthorizerArtifactKey:
+    Description: S3 object key for the authorizer ZIP
+    Type: String
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${Environment}-real-time-chat-users'
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireNumbers: true
+          RequireLowercase: true
+          RequireUppercase: true
+      MfaConfiguration: 'OFF'
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub '${Environment}-chat-web-client'
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        - COGNITO
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+
+  AuthorizerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Environment}-chat-authorizer'
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+
+  AuthorizerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-chat-authorizer-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub '${AuthorizerLogGroup.Arn}'
+                  - !Sub '${AuthorizerLogGroup.Arn}:*'
+
+  AuthorizerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - AuthorizerLogGroup
+    Properties:
+      FunctionName: !Sub '${Environment}-chat-authorizer'
+      Runtime: nodejs22.x
+      Handler: authorizer.handler
+      Timeout: 10
+      Role: !GetAtt AuthorizerExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref AuthorizerArtifactKey
+      Environment:
+        Variables:
+          USER_POOL_ID: !Ref UserPool
+          USER_POOL_CLIENT_ID: !Ref UserPoolClient
+
+Outputs:
+  UserPoolId:
+    Description: ID of the created Cognito User Pool
+    Value: !Ref UserPool
+
+  UserPoolClientId:
+    Description: ID of the created Cognito User Pool Client
+    Value: !Ref UserPoolClient
+
+  AuthorizerFunctionArn:
+    Description: ARN of the WebSocket Lambda Authorizer Function
+    Value: !GetAtt AuthorizerFunction.Arn

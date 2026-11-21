@@ -1,6 +1,11 @@
-*.ts
-!*.d.ts
+# Exclude tests and coverage
+test/
+__tests__/
+coverage/
+*.test.js
 
-# CDK asset staging directory
-.cdk.staging
-cdk.out
+# Exclude source and config files
+src/
+.eslintrc
+.prettierrc
+tsconfig.json

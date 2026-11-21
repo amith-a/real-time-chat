@@ -2,29 +2,27 @@
   "name": "real-time-chat",
   "version": "0.1.0",
   "scripts": {
-    "build": "tsc",
+    "build": "esbuild src/handlers/auth/authorizer.ts --bundle --platform=node --target=node22 --format=cjs --external:@aws-sdk/* --outfile=dist/authorizer.js",
     "watch": "tsc -w",
     "test": "vitest run",
-    "cdk": "cdk",
-    "synth": "cdk synth",
-    "diff": "cdk diff",
-    "deploy": "cdk deploy",
-    "destroy": "cdk destroy",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.1146.0",
     "@biomejs/biome": "2.5.15",
+    "@types/aws-lambda": "^8.10.164",
     "@types/node": "^24.10.1",
-    "aws-cdk": "2.1144.0",
+    "dotenv": "^18.0.10",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.0",
     "typescript": "~7.0.2",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.3",
+    "yaml": "^2.9.1"
   },
   "dependencies": {
-    "aws-cdk-lib": "^2.271.0",
-    "constructs": "^10.5.0"
+    "aws-jwt-verify": "^5.2.1"
   }
 }

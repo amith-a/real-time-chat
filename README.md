@@ -1,14 +1,11 @@
-# Welcome to your CDK TypeScript project
+# Real-Time Chat with Presence
 
-This is a blank project for CDK development with TypeScript.
-
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+A production-oriented real-time chat system built with AWS serverless infrastructure and CloudFormation.
 
 ## Useful commands
 
-* `npm run build`   type-check the project
-* `npm run watch`   watch for changes and type-check
-* `npm run test`    perform the jest unit tests
-* `npx cdk deploy`  deploy this stack to your default AWS account/region
-* `npx cdk diff`    compare deployed stack with current state
-* `npx cdk synth`   emits the synthesized CloudFormation template
+* `npm run build`      build the project
+* `npm run typecheck`  run TypeScript type checking
+* `npm test`           run unit tests (Vitest)
+* `npm run lint`       run Biome linter
+* `npm run format`     format code with Biome

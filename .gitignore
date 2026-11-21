@@ -2,8 +2,43 @@
 !jest.config.js
 *.d.ts
 node_modules
-
-# CDK asset staging directory
-.cdk.staging
-cdk.out
+dist
 .local
+
+# dependencies
+node_modules/
+
+# build output (includes dist/authorizer.zip and dist/packaged.yaml)
+dist/
+*.tsbuildinfo
+
+# environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+tokens.json
+.token
+
+# AWS
+.aws-sam/
+cdk.out/
+
+# tests and coverage
+coverage/
+.vitest/
+
+# logs
+*.log
+npm-debug.log*
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/settings.json
+
+
+authorizer-event.json
+response.json
