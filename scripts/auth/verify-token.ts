@@ -1,9 +1,12 @@
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import 'dotenv/config';
 
+const userPoolId = process.env.USER_POOL_ID || '';
+const clientId = process.env.USER_POOL_CLIENT_ID || '';
+
 const verifier = CognitoJwtVerifier.create({
-  userPoolId: process.env.USER_POOL_ID!,
-  clientId: process.env.USER_POOL_CLIENT_ID!,
+  userPoolId,
+  clientId,
   tokenUse: 'id',
 });
 
