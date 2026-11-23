@@ -193,6 +193,11 @@ export function validateMessageInput(input: {
 export async function createMessage(input: CreateMessageInput): Promise<CreateMessageResult> {
   validateMessageInput(input);
 
+  const maxAttempts = input.maxAttempts ?? 8;
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) {
+    throw new BadRequestError('maxAttempts must be an integer between 1 and 10');
+  }
+
   const { roomId, senderId, clientMessageId, content } = input;
   const messageType = input.messageType ?? 'TEXT';
   const requestHash = hashRequest({ roomId, messageType, content });
@@ -202,11 +207,6 @@ export async function createMessage(input: CreateMessageInput): Promise<CreateMe
   const existing = await getIdempotencyRecord(senderId, roomId, clientMessageId);
   if (existing) {
     return replay(existing, requestHash);
-  }
-
-  const maxAttempts = input.maxAttempts ?? 8;
-  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) {
-    throw new BadRequestError('maxAttempts must be an integer between 1 and 10');
   }
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -294,18 +294,18 @@ export async function createMessage(input: CreateMessageInput): Promise<CreateMe
         }
       }
 
+      // Another writer took this sequence, or a transient conflict: retry with a fresh counter.
+      if (conditionFailedAt(reasons, 0) || hasRetryableReason(reasons)) {
+        await backoff(attempt);
+        continue;
+      }
+
       // The message key already existed although the counter matched: invariant violation.
       if (conditionFailedAt(reasons, 1)) {
         throw new InternalServerError('Message key already exists', {
           roomId,
           sequenceNumber: next,
         });
-      }
-
-      // Another writer took this sequence, or a transient conflict: retry with a fresh counter.
-      if (conditionFailedAt(reasons, 0) || hasRetryableReason(reasons)) {
-        await backoff(attempt);
-        continue;
       }
 
       throw error;

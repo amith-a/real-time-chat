@@ -5,6 +5,8 @@
     "build": "esbuild src/handlers/auth/authorizer.ts src/handlers/websocket/connect.ts src/handlers/websocket/disconnect.ts src/handlers/websocket/default.ts --bundle --platform=node --target=node22 --format=cjs --external:@aws-sdk/* --outdir=dist --entry-names=[name]",
     "watch": "tsc -w",
     "test": "vitest run",
+    "test:unit": "vitest run --exclude \"**/integration/**\"",
+    "test:integration": "vitest run test/integration",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",

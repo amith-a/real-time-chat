@@ -38,6 +38,8 @@ export interface RoomItem extends PrimaryKey {
   createdAt: IsoTimestamp;
   createdBy: string;
   name?: string;
+  memberCount?: number;
+  membershipHash?: string;
 }
 
 export interface MembershipItem extends MembershipKeys {

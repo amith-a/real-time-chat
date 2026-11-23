@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { BadRequestError, InternalServerError } from '../shared/errors';
 import { getDocClient, getTableName, queryAll, queryPage } from './client';
@@ -34,6 +35,15 @@ function buildMembership(
   joinedAt: IsoTimestamp,
 ): MembershipItem {
   return { ...membershipKeys(userId, roomId), userId, roomId, joinedAt, role };
+}
+
+/** Deterministic hash of the membership set to avoid relying on eventually consistent GSI queries during creation race checks. */
+export function hashMembership(members: Array<{ userId: string; role: MemberRole }>): string {
+  const sorted = [...members].sort((a, b) =>
+    a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0,
+  );
+  const payload = sorted.map(({ userId, role }) => [userId, role]);
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
 
 /** AP5: get room metadata. */
@@ -139,6 +149,7 @@ export async function createDirectRoom(input: {
     roomType: 'DIRECT',
     createdAt: now,
     createdBy: userA,
+    memberCount: 2,
   };
   const counter: CounterItem = { ...roomCounterKey(roomId), sequenceNumber: 0, updatedAt: now };
   const memberA = buildMembership(userA, roomId, 'MEMBER', now);
@@ -175,8 +186,16 @@ export async function createDirectRoom(input: {
     ),
   ]);
 
-  if (!existingRoom || !existingA || !existingB || !existingCounter.Item) {
-    throw new InternalServerError('Direct room exists but is incomplete', {
+  if (
+    !existingRoom ||
+    !existingA ||
+    !existingB ||
+    !existingCounter.Item ||
+    existingRoom.roomType !== 'DIRECT' ||
+    existingA.userId !== userA ||
+    existingB.userId !== userB
+  ) {
+    throw new InternalServerError('Direct room exists but is incomplete or mismatched', {
       roomId,
       hasMeta: Boolean(existingRoom),
       hasMemberA: Boolean(existingA),
@@ -201,7 +220,7 @@ export async function createGroupRoom(input: {
   const now = input.now ?? new Date().toISOString();
   const table = getTableName();
 
-  // Validate that each user appears only once.
+  // Validate that each userId appears only once
   const memberMap = new Map<string, MemberRole>();
   for (const m of members) {
     if (memberMap.has(m.userId)) {
@@ -219,18 +238,24 @@ export async function createGroupRoom(input: {
     throw new BadRequestError('A group room creation transaction supports at most 98 members');
   }
 
+  const memberItems = Array.from(memberMap.entries()).map(([userId, role]) =>
+    buildMembership(userId, roomId, role, now),
+  );
+  const membershipHash = hashMembership(
+    Array.from(memberMap.entries()).map(([userId, role]) => ({ userId, role })),
+  );
+
   const meta: RoomItem = {
     ...roomMetaKey(roomId),
     roomId,
     roomType: 'GROUP',
     createdAt: now,
     createdBy,
+    memberCount: memberMap.size,
+    membershipHash,
     ...(name && { name }),
   };
   const counter: CounterItem = { ...roomCounterKey(roomId), sequenceNumber: 0, updatedAt: now };
-  const memberItems = Array.from(memberMap.entries()).map(([userId, role]) =>
-    buildMembership(userId, roomId, role, now),
-  );
 
   const notExists = 'attribute_not_exists(PK)';
   const transactItems = [
@@ -255,7 +280,7 @@ export async function createGroupRoom(input: {
     }
   }
 
-  // On creation race: verify the room, counter, and all memberships exist
+  // On creation race: verify the room, counter, and all memberships exist (all strongly consistent base-table reads)
   const [existingRoom, existingCounter, ...existingMembers] = await Promise.all([
     getRoom(roomId, true),
     getDocClient().send(
@@ -272,7 +297,9 @@ export async function createGroupRoom(input: {
     !membersMatch ||
     existingRoom.roomType !== 'GROUP' ||
     existingRoom.createdBy !== createdBy ||
-    (name !== undefined && existingRoom.name !== name)
+    (existingRoom.name ?? undefined) !== (name ?? undefined) ||
+    existingRoom.memberCount !== memberMap.size ||
+    existingRoom.membershipHash !== membershipHash
   ) {
     throw new InternalServerError('Group room exists but is incomplete or mismatched', {
       roomId,
@@ -281,5 +308,6 @@ export async function createGroupRoom(input: {
       missingMembers: memberItems.filter((_, i) => !existingMembers[i]).map((m) => m.userId),
     });
   }
+
   return { room: existingRoom, created: false };
 }
