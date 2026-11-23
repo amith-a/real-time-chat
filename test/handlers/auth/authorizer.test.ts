@@ -5,7 +5,7 @@ import {
   extractToken,
   generatePolicy,
   type ITokenVerifier,
-} from '../src/handlers/auth/authorizer';
+} from '../../../src/handlers/auth/authorizer';
 
 function createMockEvent(options: {
   queryStringParameters?: Record<string, string>;

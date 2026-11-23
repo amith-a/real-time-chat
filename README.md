@@ -96,13 +96,19 @@ For in-depth access patterns and query patterns, see:
 │   │   └── users.ts              # User profile persistence
 │   └── shared/                   # Shared error types, logger, and websocket context
 ├── test/                         # Unit tests (Vitest)
-│   ├── authorizer.test.ts
+│   ├── handlers/                 # Handler unit tests mirroring src/handlers
+│   │   ├── auth/
+│   │   │   └── authorizer.test.ts
+│   │   └── websocket/
+│   │       ├── connect.test.ts
+│   │       ├── disconnect.test.ts
+│   │       ├── default.test.ts
+│   │       └── helpers.ts
 │   ├── error-handler.test.ts
 │   ├── keys.test.ts
 │   ├── logger.test.ts
 │   ├── repositories.test.ts      # Repository unit tests (mocked DynamoDB)
 │   ├── shared.test.ts
-│   ├── websocket-handlers.test.ts
 │   └── integration/              # Live DynamoDB Local integration tests
 │       ├── connections.test.ts   # Connection lifecycle & presence tests
 │       ├── helpers.ts            # Test table creation, polling & safe teardown
