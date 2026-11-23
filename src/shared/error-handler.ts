@@ -1,6 +1,6 @@
 import { AppError } from './errors';
 import type { Logger } from './logger';
-import type { WebSocketResponse } from './responses';
+import { formatResponse, type WebSocketResponse } from './responses';
 
 export function handleError(error: unknown, log: Logger): WebSocketResponse {
   const normalizedError =
@@ -9,18 +9,12 @@ export function handleError(error: unknown, log: Logger): WebSocketResponse {
   log.error('Request failed', normalizedError);
 
   if (error instanceof AppError && error.isOperational && error.statusCode < 500) {
-    return {
-      statusCode: error.statusCode,
-      body: JSON.stringify({
-        message: error.message,
-      }),
-    };
+    return formatResponse(error.statusCode, {
+      message: error.message,
+    });
   }
 
-  return {
-    statusCode: 500,
-    body: JSON.stringify({
-      message: 'Internal server error',
-    }),
-  };
+  return formatResponse(500, {
+    message: 'Internal server error',
+  });
 }

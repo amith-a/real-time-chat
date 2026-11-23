@@ -1,4 +1,4 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 
 Description: Real-Time Chat infrastructure
 
@@ -35,7 +35,7 @@ Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: !Sub '${Environment}-real-time-chat-users'
+      UserPoolName: !Sub "${Environment}-real-time-chat-users"
       UsernameAttributes:
         - email
       AutoVerifiedAttributes:
@@ -46,13 +46,15 @@ Resources:
           RequireNumbers: true
           RequireLowercase: true
           RequireUppercase: true
-      MfaConfiguration: 'OFF'
+      MfaConfiguration: "OFF"
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
 
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
       UserPoolId: !Ref UserPool
-      ClientName: !Sub '${Environment}-chat-web-client'
+      ClientName: !Sub "${Environment}-chat-web-client"
       GenerateSecret: false
       ExplicitAuthFlows:
         - ALLOW_USER_PASSWORD_AUTH
@@ -68,41 +70,30 @@ Resources:
   AuthorizerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${Environment}-chat-authorizer'
+      LogGroupName: !Sub "/aws/lambda/${Environment}-chat-authorizer"
       RetentionInDays: 3
     DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
 
   AuthorizerExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${Environment}-chat-authorizer-role'
+      RoleName: !Sub "${Environment}-chat-authorizer-role"
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
               Service: lambda.amazonaws.com
             Action:
               - sts:AssumeRole
-      Policies:
-        - PolicyName: CloudWatchLogsPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource:
-                  - !GetAtt AuthorizerLogGroup.Arn
-                  - !Sub '${AuthorizerLogGroup.Arn}:*'
-
   AuthorizerFunction:
     Type: AWS::Lambda::Function
     DependsOn:
       - AuthorizerLogGroup
+      - AuthorizerLoggingPolicy
     Properties:
-      FunctionName: !Sub '${Environment}-chat-authorizer'
+      FunctionName: !Sub "${Environment}-chat-authorizer"
       Runtime: nodejs22.x
       Handler: authorizer.handler
       Timeout: 10
@@ -118,20 +109,20 @@ Resources:
   WebSocketApi:
     Type: AWS::ApiGatewayV2::Api
     Properties:
-      Name: !Sub '${AWS::StackName}-websocket'
+      Name: !Sub "${AWS::StackName}-websocket"
       ProtocolType: WEBSOCKET
-      RouteSelectionExpression: '$request.body.action'
+      RouteSelectionExpression: "$request.body.action"
 
   WebSocketAuthorizer:
     Type: AWS::ApiGatewayV2::Authorizer
     Properties:
       ApiId: !Ref WebSocketApi
-      Name: !Sub '${AWS::StackName}-authorizer'
+      Name: !Sub "${AWS::StackName}-authorizer"
       AuthorizerType: REQUEST
       IdentitySource:
         - route.request.querystring.token
       AuthorizerUri: !Sub
-        - 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations'
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
         - FunctionArn: !GetAtt AuthorizerFunction.Arn
 
   AuthorizerInvokePermission:
@@ -141,48 +132,38 @@ Resources:
       FunctionName: !GetAtt AuthorizerFunction.Arn
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub
-        - 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/authorizers/${AuthorizerId}'
+        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/authorizers/${AuthorizerId}"
         - ApiId: !Ref WebSocketApi
           AuthorizerId: !Ref WebSocketAuthorizer
 
   ConnectExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${AWS::StackName}-connect-role'
+      RoleName: !Sub "${AWS::StackName}-connect-role"
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
               Service: lambda.amazonaws.com
             Action:
               - sts:AssumeRole
-      Policies:
-        - PolicyName: ConnectLoggingPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: 
-                  - !GetAtt ConnectLogGroup.Arn
-                  - !Sub '${ConnectLogGroup.Arn}:*'
-
   ConnectLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-connect'
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-connect"
       RetentionInDays: 3
     DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
 
   ConnectFunction:
     Type: AWS::Lambda::Function
     DependsOn:
       - ConnectLogGroup
+      - ConnectLoggingPolicy
+      - ConnectDynamoDBPolicy
     Properties:
-      FunctionName: !Sub '${AWS::StackName}-connect'
+      FunctionName: !Sub "${AWS::StackName}-connect"
       Runtime: nodejs22.x
       Handler: connect.handler
       Timeout: 10
@@ -190,6 +171,9 @@ Resources:
       Code:
         S3Bucket: !Ref ArtifactBucketName
         S3Key: !Ref ConnectArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ChatTable
 
   ConnectIntegration:
     Type: AWS::ApiGatewayV2::Integration
@@ -198,7 +182,7 @@ Resources:
       IntegrationType: AWS_PROXY
       IntegrationMethod: POST
       IntegrationUri: !Sub
-        - 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations'
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
         - FunctionArn: !GetAtt ConnectFunction.Arn
 
   DisconnectIntegration:
@@ -208,7 +192,7 @@ Resources:
       IntegrationType: AWS_PROXY
       IntegrationMethod: POST
       IntegrationUri: !Sub
-        - 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations'
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
         - FunctionArn: !GetAtt DisconnectFunction.Arn
 
   DefaultIntegration:
@@ -218,7 +202,7 @@ Resources:
       IntegrationType: AWS_PROXY
       IntegrationMethod: POST
       IntegrationUri: !Sub
-        - 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations'
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
         - FunctionArn: !GetAtt DefaultFunction.Arn
 
   ConnectInvokePermission:
@@ -228,7 +212,7 @@ Resources:
       FunctionName: !GetAtt ConnectFunction.Arn
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub
-        - 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$connect'
+        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$connect"
         - ApiId: !Ref WebSocketApi
 
   DisconnectInvokePermission:
@@ -238,7 +222,7 @@ Resources:
       FunctionName: !GetAtt DisconnectFunction.Arn
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub
-        - 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$disconnect'
+        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$disconnect"
         - ApiId: !Ref WebSocketApi
 
   DefaultInvokePermission:
@@ -248,33 +232,33 @@ Resources:
       FunctionName: !GetAtt DefaultFunction.Arn
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub
-        - 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$default'
+        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$default"
         - ApiId: !Ref WebSocketApi
 
   ConnectRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref WebSocketApi
-      RouteKey: '$connect'
+      RouteKey: "$connect"
       AuthorizationType: CUSTOM
       AuthorizerId: !Ref WebSocketAuthorizer
-      Target: !Sub 'integrations/${ConnectIntegration}'
-  
+      Target: !Sub "integrations/${ConnectIntegration}"
+
   DisconnectRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref WebSocketApi
-      RouteKey: '$disconnect'
+      RouteKey: "$disconnect"
       AuthorizationType: NONE
-      Target: !Sub 'integrations/${DisconnectIntegration}'
+      Target: !Sub "integrations/${DisconnectIntegration}"
 
   DefaultRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref WebSocketApi
-      RouteKey: '$default'
+      RouteKey: "$default"
       AuthorizationType: NONE
-      Target: !Sub 'integrations/${DefaultIntegration}'
+      Target: !Sub "integrations/${DefaultIntegration}"
 
   WebSocketDeployment:
     Type: AWS::ApiGatewayV2::Deployment
@@ -302,40 +286,30 @@ Resources:
   DisconnectLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-disconnect'
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-disconnect"
       RetentionInDays: 3
     DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
 
   DisconnectExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${AWS::StackName}-disconnect-role'
+      RoleName: !Sub "${AWS::StackName}-disconnect-role"
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: DisconnectLoggingPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource:
-                  - !GetAtt DisconnectLogGroup.Arn
-                  - !Sub '${DisconnectLogGroup.Arn}:*'
-
   DisconnectFunction:
     Type: AWS::Lambda::Function
     DependsOn:
       - DisconnectLogGroup
+      - DisconnectLoggingPolicy
+      - DisconnectDynamoDBPolicy
     Properties:
-      FunctionName: !Sub '${AWS::StackName}-disconnect'
+      FunctionName: !Sub "${AWS::StackName}-disconnect"
       Runtime: nodejs22.x
       Handler: disconnect.handler
       Timeout: 10
@@ -343,51 +317,221 @@ Resources:
       Code:
         S3Bucket: !Ref ArtifactBucketName
         S3Key: !Ref DisconnectArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ChatTable
 
   DefaultLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-default'
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-default"
       RetentionInDays: 3
     DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
 
   DefaultExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${AWS::StackName}-default-role'
+      RoleName: !Sub "${AWS::StackName}-default-role"
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: DefaultLoggingPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource:
-                  - !GetAtt DefaultLogGroup.Arn
-                  - !Sub '${DefaultLogGroup.Arn}:*'
-
   DefaultFunction:
     Type: AWS::Lambda::Function
     DependsOn:
       - DefaultLogGroup
+      - DefaultLoggingPolicy
+      - DefaultDynamoDBPolicy
+      - DefaultManageConnectionsPolicy
     Properties:
-      FunctionName: !Sub '${AWS::StackName}-default'
+      FunctionName: !Sub "${AWS::StackName}-default"
       Runtime: nodejs22.x
       Handler: default.handler
-      Timeout: 10
+      Timeout: 20
       Role: !GetAtt DefaultExecutionRole.Arn
       Code:
         S3Bucket: !Ref ArtifactBucketName
         S3Key: !Ref DefaultArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ChatTable
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+    UpdateReplacePolicy: Delete
+
+  ChatTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-chat-table"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  AuthorizerLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${Environment}-chat-authorizer-logging"
+      Roles:
+        - !Ref AuthorizerExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt AuthorizerLogGroup.Arn
+              - !Sub "${AuthorizerLogGroup.Arn}:*"
+
+  ConnectLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-connect-logging"
+      Roles:
+        - !Ref ConnectExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt ConnectLogGroup.Arn
+              - !Sub "${ConnectLogGroup.Arn}:*"
+
+  ConnectDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-connect-dynamodb"
+      Roles:
+        - !Ref ConnectExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource:
+              - !GetAtt ChatTable.Arn
+
+  DisconnectLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-disconnect-logging"
+      Roles:
+        - !Ref DisconnectExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt DisconnectLogGroup.Arn
+              - !Sub "${DisconnectLogGroup.Arn}:*"
+
+  DisconnectDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-disconnect-dynamodb"
+      Roles:
+        - !Ref DisconnectExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+            Resource:
+              - !GetAtt ChatTable.Arn
+
+  DefaultLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-default-logging"
+      Roles:
+        - !Ref DefaultExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt DefaultLogGroup.Arn
+              - !Sub "${DefaultLogGroup.Arn}:*"
+
+  DefaultDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-default-dynamodb"
+      Roles:
+        - !Ref DefaultExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+            Resource:
+              - !GetAtt ChatTable.Arn
+              - !Sub "${ChatTable.Arn}/index/*"
+
+  DefaultManageConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-default-manage-connections"
+      Roles:
+        - !Ref DefaultExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - execute-api:ManageConnections
+            Resource:
+              - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
 
 Outputs:
   UserPoolId:
@@ -408,4 +552,12 @@ Outputs:
 
   WebSocketEndpoint:
     Description: WebSocket endpoint for the deployed stage
-    Value: !Sub 'wss://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Value: !Sub "wss://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+
+  ChatTableName:
+    Description: Name of the DynamoDB Chat Table
+    Value: !Ref ChatTable
+
+  ChatTableArn:
+    Description: ARN of the DynamoDB Chat Table
+    Value: !GetAtt ChatTable.Arn
