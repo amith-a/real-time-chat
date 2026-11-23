@@ -6,6 +6,7 @@ import * as repos from '../../src/repositories';
 import {
   getConnection,
   getPresence,
+  getUserProfile,
   registerConnection,
   removeConnection,
   removeStaleConnection,
@@ -162,6 +163,12 @@ describe('connections and presence (DynamoDB Local)', () => {
 
       const presence = await getPresence('u-hdl-1');
       expect(presence).toMatchObject({ online: true, activeConnectionCount: 1 });
+
+      const profile = await getUserProfile('u-hdl-1');
+      expect(profile).toMatchObject({
+        userId: 'u-hdl-1',
+        email: 'uhdl1@example.com',
+      });
     });
 
     it('$connect rejects unauthenticated connection with 401', async () => {

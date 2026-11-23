@@ -4,10 +4,14 @@ import {
   createDirectRoom,
   createGroupRoom,
   createMessage,
+  ensureUserProfile,
   getPresence,
+  getUserByEmail,
+  getUserProfile,
   hashMembership,
   hashRequest,
   listUserConnectionsPage,
+  listUsers,
   putUserProfile,
   registerConnection,
   removeConnection,
@@ -823,6 +827,8 @@ describe('DynamoDB Repository Layer', () => {
       expect(updated).toEqual({
         PK: 'USER#user-1',
         SK: 'PROFILE',
+        GSI1PK: 'USERS',
+        GSI1SK: 'USER#user-1',
         userId: 'user-1',
         displayName: 'Alice Updated',
       });
@@ -831,6 +837,101 @@ describe('DynamoDB Repository Layer', () => {
       // PutCommand replaces the entire item: old attributes not passed are omitted
       expect(call.input.Item).not.toHaveProperty('bio');
       expect(call.input.Item).not.toHaveProperty('location');
+    });
+
+    it('ensureUserProfile creates or updates profile with GSI1 keys atomically', async () => {
+      mockSend.mockResolvedValueOnce({
+        Attributes: {
+          PK: 'USER#u-ensure',
+          SK: 'PROFILE',
+          userId: 'u-ensure',
+          email: 'ensure@example.com',
+          username: 'ensureuser',
+          GSI1PK: 'USERS',
+          GSI1SK: 'EMAIL#ensure@example.com',
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
+        },
+      });
+
+      const profile = await ensureUserProfile({
+        userId: 'u-ensure',
+        email: 'ensure@example.com',
+        username: 'ensureuser',
+        now: '2026-01-01T00:00:00Z',
+      });
+
+      expect(profile).toMatchObject({
+        userId: 'u-ensure',
+        email: 'ensure@example.com',
+        GSI1PK: 'USERS',
+        GSI1SK: 'EMAIL#ensure@example.com',
+      });
+
+      const call = mockSend.mock.calls[0][0];
+      expect(call.input.Key).toEqual({ PK: 'USER#u-ensure', SK: 'PROFILE' });
+      expect(call.input.UpdateExpression).toContain('createdAt = if_not_exists(createdAt, :now)');
+      expect(call.input.UpdateExpression).toContain('GSI1PK = :gsi1pk');
+    });
+
+    it('getUserProfile retrieves profile by userId', async () => {
+      mockSend.mockResolvedValueOnce({
+        Item: {
+          PK: 'USER#u-get',
+          SK: 'PROFILE',
+          userId: 'u-get',
+          email: 'get@example.com',
+        },
+      });
+
+      const profile = await getUserProfile('u-get');
+      expect(profile?.userId).toBe('u-get');
+      expect(profile?.email).toBe('get@example.com');
+      const call = mockSend.mock.calls[0][0];
+      expect(call.input.Key).toEqual({ PK: 'USER#u-get', SK: 'PROFILE' });
+    });
+
+    it('getUserByEmail queries GSI1 with USERS partition and EMAIL sort key', async () => {
+      mockSend.mockResolvedValueOnce({
+        Items: [
+          {
+            PK: 'USER#u-email',
+            SK: 'PROFILE',
+            userId: 'u-email',
+            email: 'lookup@example.com',
+            GSI1PK: 'USERS',
+            GSI1SK: 'EMAIL#lookup@example.com',
+          },
+        ],
+      });
+
+      const profile = await getUserByEmail('LOOKUP@EXAMPLE.COM');
+      expect(profile?.userId).toBe('u-email');
+      expect(profile?.email).toBe('lookup@example.com');
+
+      const call = mockSend.mock.calls[0][0];
+      expect(call.input.IndexName).toBe('GSI1');
+      expect(call.input.ExpressionAttributeValues[':gsi1pk']).toBe('USERS');
+      expect(call.input.ExpressionAttributeValues[':gsi1sk']).toBe('EMAIL#lookup@example.com');
+    });
+
+    it('listUsers queries GSI1 to fetch paginated users', async () => {
+      mockSend.mockResolvedValueOnce({
+        Items: [
+          { userId: 'u1', email: 'u1@example.com' },
+          { userId: 'u2', email: 'u2@example.com' },
+        ],
+        LastEvaluatedKey: { PK: 'USER#u2' },
+      });
+
+      const page = await listUsers({ limit: 10 });
+      expect(page.items).toHaveLength(2);
+      expect(page.nextKey).toEqual({ PK: 'USER#u2' });
+
+      const call = mockSend.mock.calls[0][0];
+      expect(call.input.IndexName).toBe('GSI1');
+      expect(call.input.KeyConditionExpression).toBe('GSI1PK = :gsi1pk');
+      expect(call.input.ExpressionAttributeValues[':gsi1pk']).toBe('USERS');
     });
   });
 

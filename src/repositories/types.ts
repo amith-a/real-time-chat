@@ -10,8 +10,14 @@ export type IsoTimestamp = string;
 export interface UserProfileItem extends PrimaryKey {
   userId: string;
   email?: string;
+  username?: string;
   name?: string;
+  displayName?: string;
+  avatarUrl?: string;
   createdAt?: IsoTimestamp;
+  updatedAt?: IsoTimestamp;
+  GSI1PK?: string;
+  GSI1SK?: string;
   [attribute: string]: unknown;
 }
 

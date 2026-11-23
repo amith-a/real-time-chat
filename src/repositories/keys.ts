@@ -66,6 +66,13 @@ export function userKey(userId: string): PrimaryKey {
   return { PK: `USER#${assertId('userId', userId)}`, SK: 'PROFILE' };
 }
 
+export function userGsi1Keys(userId: string, email?: string): { GSI1PK: string; GSI1SK: string } {
+  return {
+    GSI1PK: 'USERS',
+    GSI1SK: email ? `EMAIL#${email.trim().toLowerCase()}` : `USER#${assertId('userId', userId)}`,
+  };
+}
+
 export function connectionKey(userId: string, connectionId: string): PrimaryKey {
   return {
     PK: `USER#${assertId('userId', userId)}`,

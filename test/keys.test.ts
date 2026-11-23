@@ -12,12 +12,21 @@ import {
   presenceKey,
   roomCounterKey,
   roomMetaKey,
+  userGsi1Keys,
   userKey,
 } from '../src/repositories/keys';
 
 describe('entity keys', () => {
   it('builds user, connection, presence and owner keys', () => {
     expect(userKey('u1')).toEqual({ PK: 'USER#u1', SK: 'PROFILE' });
+    expect(userGsi1Keys('u1', 'alice@example.com')).toEqual({
+      GSI1PK: 'USERS',
+      GSI1SK: 'EMAIL#alice@example.com',
+    });
+    expect(userGsi1Keys('u1')).toEqual({
+      GSI1PK: 'USERS',
+      GSI1SK: 'USER#u1',
+    });
     expect(connectionKey('u1', 'c1')).toEqual({ PK: 'USER#u1', SK: 'CONNECTION#c1' });
     expect(presenceKey('u1')).toEqual({ PK: 'USER#u1', SK: 'PRESENCE' });
     expect(connectionOwnerKey('c1')).toEqual({ PK: 'CONN#c1', SK: 'OWNER' });

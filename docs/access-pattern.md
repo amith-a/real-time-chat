@@ -83,8 +83,14 @@ The examples below use symbolic IDs. The actual item also contains its primary k
 |---|---|
 | `PK` | `USER#<userId>` |
 | `SK` | `PROFILE` |
+| `GSI1PK` | `USERS` |
+| `GSI1SK` | `EMAIL#<email>` (or `USER#<userId>`) |
 
-Stores the user's profile data required by the application. The exact profile attributes are owned by the user/profile feature.
+Stores the user's profile data. Supports:
+- **AP1 (Get user profile by ID)**: Direct `GetItem` on `PK = USER#<userId>, SK = PROFILE`.
+- **Get user by email**: `Query` on GSI1 with `GSI1PK = USERS AND GSI1SK = EMAIL#<email>`.
+- **List all users**: `Query` on GSI1 with `GSI1PK = USERS`.
+- Idempotently created or refreshed during `$connect` via `ensureUserProfile`.
 
 ### 4.2 Connection
 

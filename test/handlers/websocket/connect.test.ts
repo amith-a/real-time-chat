@@ -16,6 +16,11 @@ describe('Connect Handler ($connect)', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     vi.restoreAllMocks();
+    vi.spyOn(repos, 'ensureUserProfile').mockResolvedValue({
+      PK: 'USER#u-1',
+      SK: 'PROFILE',
+      userId: 'u-1',
+    });
   });
 
   afterEach(() => {
@@ -56,6 +61,11 @@ describe('Connect Handler ($connect)', () => {
 
   it('registers connection and returns 200 when TABLE_NAME is set', async () => {
     process.env.TABLE_NAME = 'mock-table';
+    const ensureSpy = vi.spyOn(repos, 'ensureUserProfile').mockResolvedValueOnce({
+      PK: 'USER#u-1',
+      SK: 'PROFILE',
+      userId: 'u-1',
+    });
     const registerSpy = vi
       .spyOn(repos, 'registerConnection')
       .mockResolvedValueOnce({ registered: true });
@@ -69,6 +79,12 @@ describe('Connect Handler ($connect)', () => {
     expect(result).toEqual({
       statusCode: 200,
       body: 'Connected',
+    });
+    expect(ensureSpy).toHaveBeenCalledWith({
+      userId: 'u-1',
+      email: 'u1@example.com',
+      username: undefined,
+      now: expect.any(String),
     });
     expect(registerSpy).toHaveBeenCalledWith({
       userId: 'u-1',

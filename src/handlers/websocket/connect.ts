@@ -1,5 +1,5 @@
 import type { APIGatewayProxyWebsocketHandlerV2 } from 'aws-lambda';
-import { registerConnection } from '../../repositories';
+import { ensureUserProfile, registerConnection } from '../../repositories';
 import {
   formatResponse,
   getAuthenticatedUser,
@@ -16,12 +16,19 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
 
   try {
     const { connectionId } = getWebSocketContext(event);
-    const { userId, email } = getAuthenticatedUser(event);
+    const { userId, email, username } = getAuthenticatedUser(event);
 
     if (process.env.TABLE_NAME) {
       const now = event.requestContext.connectedAt
         ? new Date(event.requestContext.connectedAt).toISOString()
         : undefined;
+
+      await ensureUserProfile({
+        userId,
+        email,
+        username,
+        now,
+      });
 
       const result = await registerConnection({
         userId,
