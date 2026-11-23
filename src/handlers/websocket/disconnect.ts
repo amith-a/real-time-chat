@@ -1,6 +1,12 @@
 import type { APIGatewayProxyWebsocketHandlerV2 } from 'aws-lambda';
 import { getConnectionOwner, removeConnection } from '../../repositories';
-import { formatResponse, getWebSocketContext, handleError, logger } from '../../shared';
+import {
+  formatResponse,
+  getAuthorizerUser,
+  getWebSocketContext,
+  handleError,
+  logger,
+} from '../../shared';
 
 export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
   const log = logger.withContext({
@@ -16,9 +22,8 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
     // Only attempt database cleanup if TABLE_NAME is configured
     if (process.env.TABLE_NAME) {
       try {
-        const authorizer = (event.requestContext as { authorizer?: { userId?: string } })
-          ?.authorizer;
-        let userId = authorizer?.userId;
+        const authorizerUser = getAuthorizerUser(event);
+        let userId = authorizerUser?.userId;
 
         if (!userId) {
           userId = await getConnectionOwner(connectionId);

@@ -4,6 +4,8 @@ import {
   BadRequestError,
   ForbiddenError,
   formatResponse,
+  getAuthenticatedUser,
+  getAuthorizerUser,
   getConnectionId,
   getRouteKey,
   getWebSocketContext,
@@ -122,6 +124,69 @@ describe('Shared Utilities', () => {
     it('throws BadRequestError on malformed JSON body', () => {
       const event = { body: 'not-json' } as unknown as Parameters<typeof parseJsonBody>[0];
       expect(() => parseJsonBody(event)).toThrow(BadRequestError);
+    });
+
+    it('extracts authenticated user from authorizer context', () => {
+      const event = {
+        requestContext: {
+          authorizer: {
+            userId: 'user-456',
+            email: 'user@example.com',
+            username: 'testuser',
+          },
+        },
+      } as unknown as Parameters<typeof getAuthenticatedUser>[0];
+
+      expect(getAuthenticatedUser(event)).toEqual({
+        userId: 'user-456',
+        email: 'user@example.com',
+        username: 'testuser',
+      });
+    });
+
+    it('falls back to principalId if userId is omitted', () => {
+      const event = {
+        requestContext: {
+          authorizer: {
+            principalId: 'principal-789',
+            email: 'admin@example.com',
+          },
+        },
+      } as unknown as Parameters<typeof getAuthenticatedUser>[0];
+
+      expect(getAuthenticatedUser(event)).toEqual({
+        userId: 'principal-789',
+        email: 'admin@example.com',
+        username: undefined,
+      });
+    });
+
+    it('throws UnauthorizedError when authorizer or userId is missing', () => {
+      const eventNoAuth = { requestContext: {} } as unknown as Parameters<
+        typeof getAuthenticatedUser
+      >[0];
+      expect(() => getAuthenticatedUser(eventNoAuth)).toThrow(UnauthorizedError);
+
+      const eventEmptyUser = {
+        requestContext: { authorizer: { userId: '  ' } },
+      } as unknown as Parameters<typeof getAuthenticatedUser>[0];
+      expect(() => getAuthenticatedUser(eventEmptyUser)).toThrow(UnauthorizedError);
+    });
+
+    it('safely extracts authorizer user without throwing via getAuthorizerUser', () => {
+      const eventNoAuth = { requestContext: {} } as unknown as Parameters<
+        typeof getAuthorizerUser
+      >[0];
+      expect(getAuthorizerUser(eventNoAuth)).toBeUndefined();
+
+      const eventWithAuth = {
+        requestContext: { authorizer: { userId: 'u1', email: 'u1@example.com' } },
+      } as unknown as Parameters<typeof getAuthorizerUser>[0];
+      expect(getAuthorizerUser(eventWithAuth)).toEqual({
+        userId: 'u1',
+        email: 'u1@example.com',
+        username: undefined,
+      });
     });
   });
 });

@@ -1,4 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { APIGatewayProxyWebsocketEventV2, Context } from 'aws-lambda';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { handler as connectHandler } from '../../src/handlers/websocket/connect';
+import { handler as disconnectHandler } from '../../src/handlers/websocket/disconnect';
+import * as repos from '../../src/repositories';
 import {
   getConnection,
   getPresence,
@@ -15,6 +19,35 @@ import { createTestTable, safeTeardown } from './helpers';
 const T0 = '2026-01-01T00:00:00.000Z';
 const T1 = '2026-01-01T00:05:00.000Z';
 const T2 = '2026-01-01T00:10:00.000Z';
+
+const mockContext = {} as Context;
+const mockCallback = () => {};
+
+function makeWsEvent(options: {
+  connectionId?: string;
+  routeKey?: string;
+  authorizer?: { userId?: string; email?: string };
+}): APIGatewayProxyWebsocketEventV2 {
+  return {
+    isBase64Encoded: false,
+    requestContext: {
+      routeKey: options.routeKey || '$connect',
+      messageId: 'msg-test',
+      eventType: 'CONNECT',
+      extendedRequestId: 'ext-test',
+      requestTime: '2026-11-22T00:00:00Z',
+      messageDirection: 'IN',
+      stage: 'test',
+      connectedAt: 1700000000,
+      requestTimeEpoch: 1700000000,
+      requestId: 'req-test',
+      domainName: 'test.example.com',
+      connectionId: options.connectionId || 'conn-test',
+      apiId: 'test-api',
+      authorizer: options.authorizer,
+    } as unknown as APIGatewayProxyWebsocketEventV2['requestContext'],
+  };
+}
 
 describe('connections and presence (DynamoDB Local)', () => {
   let table: string;
@@ -111,5 +144,228 @@ describe('connections and presence (DynamoDB Local)', () => {
     expect((await getPresence('b1')).activeConnectionCount).toBe(0);
     expect(await getConnection('b2', 'alive', true)).toBeDefined();
     expect((await getPresence('b2')).activeConnectionCount).toBe(1);
+  });
+
+  describe('$connect and $disconnect Lambda handlers', () => {
+    it('$connect registers connection and sets user online', async () => {
+      const event = makeWsEvent({
+        connectionId: 'c-hdl-1',
+        routeKey: '$connect',
+        authorizer: { userId: 'u-hdl-1', email: 'uhdl1@example.com' },
+      });
+      const response = await connectHandler(event, mockContext, mockCallback);
+      expect(response).toEqual({ statusCode: 200, body: 'Connected' });
+
+      const conn = await getConnection('u-hdl-1', 'c-hdl-1', true);
+      expect(conn).toBeDefined();
+      expect(conn?.connectionId).toBe('c-hdl-1');
+
+      const presence = await getPresence('u-hdl-1');
+      expect(presence).toMatchObject({ online: true, activeConnectionCount: 1 });
+    });
+
+    it('$connect rejects unauthenticated connection with 401', async () => {
+      const event = makeWsEvent({
+        connectionId: 'c-hdl-2',
+        routeKey: '$connect',
+      });
+      const response = await connectHandler(event, mockContext, mockCallback);
+      expect(response).toMatchObject({
+        statusCode: 401,
+        body: JSON.stringify({ message: 'Missing authenticated userId' }),
+      });
+    });
+
+    it('$connect rejects stolen connectionId with 403', async () => {
+      // First user u-hdl-1 already owns c-hdl-1 from the first test
+      const event = makeWsEvent({
+        connectionId: 'c-hdl-1',
+        routeKey: '$connect',
+        authorizer: { userId: 'u-hdl-2', email: 'uhdl2@example.com' },
+      });
+      const response = await connectHandler(event, mockContext, mockCallback);
+      expect(response).toMatchObject({
+        statusCode: 403,
+        body: JSON.stringify({ message: 'Connection is registered to a different user' }),
+      });
+    });
+
+    it('$disconnect removes connection without authorizer by looking up connection owner', async () => {
+      // c-hdl-1 is connected for u-hdl-1. API Gateway sends $disconnect WITHOUT authorizer
+      const event = makeWsEvent({
+        connectionId: 'c-hdl-1',
+        routeKey: '$disconnect',
+      });
+      const response = await disconnectHandler(event, mockContext, mockCallback);
+      expect(response).toEqual({ statusCode: 200, body: 'Disconnected' });
+
+      const conn = await getConnection('u-hdl-1', 'c-hdl-1', true);
+      expect(conn).toBeUndefined();
+
+      const presence = await getPresence('u-hdl-1');
+      expect(presence).toMatchObject({ online: false, activeConnectionCount: 0 });
+    });
+
+    it('$disconnect handles unknown connection gracefully with 200', async () => {
+      const event = makeWsEvent({
+        connectionId: 'c-hdl-ghost',
+        routeKey: '$disconnect',
+      });
+      const response = await disconnectHandler(event, mockContext, mockCallback);
+      expect(response).toEqual({ statusCode: 200, body: 'Disconnected' });
+    });
+
+    it('$connect duplicate connection from the same user returns 200 without incrementing presence twice', async () => {
+      const event = makeWsEvent({
+        connectionId: 'c-dup-1',
+        routeKey: '$connect',
+        authorizer: { userId: 'u-dup-1', email: 'dup@example.com' },
+      });
+
+      const res1 = await connectHandler(event, mockContext, mockCallback);
+      expect(res1).toEqual({ statusCode: 200, body: 'Connected' });
+      expect(await getPresence('u-dup-1')).toMatchObject({
+        online: true,
+        activeConnectionCount: 1,
+      });
+
+      // Second connect with identical connectionId and userId
+      const res2 = await connectHandler(event, mockContext, mockCallback);
+      expect(res2).toEqual({ statusCode: 200, body: 'Connected' });
+      expect(await getPresence('u-dup-1')).toMatchObject({
+        online: true,
+        activeConnectionCount: 1,
+      });
+    });
+
+    it('$disconnect repeated invocation does not decrement presence twice', async () => {
+      // Connect two connections for the same user
+      const event1 = makeWsEvent({
+        connectionId: 'c-rep-1',
+        routeKey: '$connect',
+        authorizer: { userId: 'u-rep-1', email: 'rep@example.com' },
+      });
+      const event2 = makeWsEvent({
+        connectionId: 'c-rep-2',
+        routeKey: '$connect',
+        authorizer: { userId: 'u-rep-1', email: 'rep@example.com' },
+      });
+
+      await connectHandler(event1, mockContext, mockCallback);
+      await connectHandler(event2, mockContext, mockCallback);
+      expect(await getPresence('u-rep-1')).toMatchObject({
+        online: true,
+        activeConnectionCount: 2,
+      });
+
+      // First disconnect for c-rep-1
+      const dis1 = await disconnectHandler(
+        makeWsEvent({ connectionId: 'c-rep-1', routeKey: '$disconnect' }),
+        mockContext,
+        mockCallback,
+      );
+      expect(dis1).toEqual({ statusCode: 200, body: 'Disconnected' });
+      expect(await getPresence('u-rep-1')).toMatchObject({
+        online: true,
+        activeConnectionCount: 1,
+      });
+
+      // Repeated disconnect for c-rep-1
+      const disRepeated = await disconnectHandler(
+        makeWsEvent({ connectionId: 'c-rep-1', routeKey: '$disconnect' }),
+        mockContext,
+        mockCallback,
+      );
+      expect(disRepeated).toEqual({ statusCode: 200, body: 'Disconnected' });
+      expect(await getPresence('u-rep-1')).toMatchObject({
+        online: true,
+        activeConnectionCount: 1,
+      });
+
+      // Disconnect c-rep-2
+      const dis2 = await disconnectHandler(
+        makeWsEvent({ connectionId: 'c-rep-2', routeKey: '$disconnect' }),
+        mockContext,
+        mockCallback,
+      );
+      expect(dis2).toEqual({ statusCode: 200, body: 'Disconnected' });
+      expect(await getPresence('u-rep-1')).toMatchObject({
+        online: false,
+        activeConnectionCount: 0,
+      });
+
+      // Repeated disconnect for c-rep-2 should not decrement below 0
+      const dis2Repeated = await disconnectHandler(
+        makeWsEvent({ connectionId: 'c-rep-2', routeKey: '$disconnect' }),
+        mockContext,
+        mockCallback,
+      );
+      expect(dis2Repeated).toEqual({ statusCode: 200, body: 'Disconnected' });
+      expect(await getPresence('u-rep-1')).toMatchObject({
+        online: false,
+        activeConnectionCount: 0,
+      });
+    });
+
+    it('$disconnect with an authorizer user that does not own the connection is safely handled', async () => {
+      // Legitimate user u-legit owns c-legit-1
+      await connectHandler(
+        makeWsEvent({
+          connectionId: 'c-legit-1',
+          routeKey: '$connect',
+          authorizer: { userId: 'u-legit', email: 'legit@example.com' },
+        }),
+        mockContext,
+        mockCallback,
+      );
+      expect(await getPresence('u-legit')).toMatchObject({
+        online: true,
+        activeConnectionCount: 1,
+      });
+
+      // Imposter sends $disconnect for c-legit-1 with imposter's authorizer userId
+      const response = await disconnectHandler(
+        makeWsEvent({
+          connectionId: 'c-legit-1',
+          routeKey: '$disconnect',
+          authorizer: { userId: 'u-imposter', email: 'imposter@example.com' },
+        }),
+        mockContext,
+        mockCallback,
+      );
+      expect(response).toEqual({ statusCode: 200, body: 'Disconnected' });
+
+      // u-legit's connection and presence must be completely intact
+      const legitConn = await getConnection('u-legit', 'c-legit-1', true);
+      expect(legitConn).toBeDefined();
+      expect(legitConn?.connectionId).toBe('c-legit-1');
+      expect(await getPresence('u-legit')).toMatchObject({
+        online: true,
+        activeConnectionCount: 1,
+      });
+
+      // u-imposter has not altered their own presence count
+      expect((await getPresence('u-imposter')).activeConnectionCount).toBe(0);
+    });
+
+    it('$disconnect returns 200 even when database cleanup fails', async () => {
+      const spy = vi
+        .spyOn(repos, 'removeConnection')
+        .mockRejectedValueOnce(new Error('Simulated DynamoDB outage'));
+
+      const response = await disconnectHandler(
+        makeWsEvent({
+          connectionId: 'c-cleanup-fail',
+          routeKey: '$disconnect',
+          authorizer: { userId: 'u-cleanup-fail', email: 'fail@example.com' },
+        }),
+        mockContext,
+        mockCallback,
+      );
+
+      expect(response).toEqual({ statusCode: 200, body: 'Disconnected' });
+      expect(spy).toHaveBeenCalled();
+      spy.mockRestore();
+    });
   });
 });
