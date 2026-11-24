@@ -47,7 +47,7 @@ echo "Artifact bucket: $BUCKET"
 echo "Running type-check..."
 npm run typecheck
 
-# 4. Build all Lambda bundles using esbuild
+# 4. Build all Lambda bundles using esbuild config (esbuild.config.mjs)
 echo "Building Lambda functions..."
 npm run build
 
@@ -55,7 +55,7 @@ npm run build
 # Logs go to stderr so command substitution captures only the artifact key.
 package_and_upload() {
   local HANDLER="$1"
-  local SOURCE_PATH="$2"
+  local SOURCE_PATH="${2:-$1}"
   local JS_FILE="dist/${SOURCE_PATH}.js"
   local ZIP_FILE="dist/${HANDLER}.zip"
   local HASH
@@ -110,13 +110,13 @@ package_and_upload() {
 }
 
 # Capture each function's content-based S3 key.
-AUTHORIZER_ARTIFACT_KEY=$(package_and_upload authorizer authorizer)
-CONNECT_ARTIFACT_KEY=$(package_and_upload connect connect)
-DISCONNECT_ARTIFACT_KEY=$(package_and_upload disconnect disconnect)
-DEFAULT_ARTIFACT_KEY=$(package_and_upload default default)
-SEND_MESSAGE_ARTIFACT_KEY=$(package_and_upload sendMessage sendMessage)
-USERS_ARTIFACT_KEY=$(package_and_upload users users)
-MESSAGES_ARTIFACT_KEY=$(package_and_upload messages messages)
+AUTHORIZER_ARTIFACT_KEY=$(package_and_upload authorizer)
+CONNECT_ARTIFACT_KEY=$(package_and_upload connect)
+DISCONNECT_ARTIFACT_KEY=$(package_and_upload disconnect)
+DEFAULT_ARTIFACT_KEY=$(package_and_upload default)
+SEND_MESSAGE_ARTIFACT_KEY=$(package_and_upload sendMessage)
+USERS_ARTIFACT_KEY=$(package_and_upload users)
+MESSAGES_ARTIFACT_KEY=$(package_and_upload messages)
 
 # 6. Deploy the application stack
 echo "Deploying application stack..."
