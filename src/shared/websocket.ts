@@ -112,9 +112,9 @@ export function getRouteKey(event: APIGatewayProxyWebsocketEventV2): string {
 }
 
 /**
- * Safely parses JSON body from WebSocket message event.
+ * Safely parses JSON body from WebSocket message event or HTTP proxy event.
  */
-export function parseJsonBody<T>(event: APIGatewayProxyWebsocketEventV2): T {
+export function parseJsonBody<T>(event: { body?: string | null }): T {
   if (!event.body) {
     throw new BadRequestError('Missing request body');
   }

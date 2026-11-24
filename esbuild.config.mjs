@@ -9,6 +9,7 @@ await build({
     'src/handlers/websocket/sendMessage.ts',
     'src/handlers/http/users.ts',
     'src/handlers/http/messages.ts',
+    'src/handlers/http/rooms.ts',
   ],
   bundle: true,
   platform: 'node',

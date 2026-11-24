@@ -210,6 +210,15 @@ describe('Messages HTTP Handler', () => {
   describe('Membership Authorization', () => {
     it('returns 403 Forbidden when user is not a member of the room', async () => {
       vi.spyOn(repositories, 'isMember').mockResolvedValue(false);
+      vi.spyOn(repositories, 'getRoom').mockResolvedValue({
+        PK: 'ROOM#private-room',
+        SK: 'META',
+        roomId: 'private-room',
+        roomType: 'GROUP',
+        createdBy: 'user-admin',
+        memberCount: 2,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      });
       const listSpy = vi.spyOn(repositories, 'listLatestMessages');
 
       const event = createHttpEvent({ userId: 'stranger-user', roomId: 'private-room' });
@@ -218,6 +227,17 @@ describe('Messages HTTP Handler', () => {
       expect(res.statusCode).toBe(403);
       expect(JSON.parse(res.body).message).toBe('You are not a member of this room');
       expect(listSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 Not Found when room does not exist', async () => {
+      vi.spyOn(repositories, 'isMember').mockResolvedValue(false);
+      vi.spyOn(repositories, 'getRoom').mockResolvedValue(undefined);
+
+      const event = createHttpEvent({ userId: 'stranger-user', roomId: 'missing-room' });
+      const res = (await messagesHandler(event, mockContext, mockCallback)) as HttpResponse;
+
+      expect(res.statusCode).toBe(404);
+      expect(JSON.parse(res.body).message).toContain('Room missing-room not found');
     });
 
     it('returns 500 when isMember database call fails', async () => {

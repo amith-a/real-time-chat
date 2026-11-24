@@ -1,6 +1,16 @@
 import { createHash } from 'node:crypto';
-import { GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
-import { BadRequestError, InternalServerError } from '../shared/errors';
+import {
+  GetCommand,
+  TransactWriteCommand,
+  type TransactWriteCommandInput,
+} from '@aws-sdk/lib-dynamodb';
+import {
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  InternalServerError,
+  NotFoundError,
+} from '../shared/errors';
 import { getDocClient, getTableName, queryAll, queryPage } from './client';
 import {
   cancellationReasons,
@@ -27,6 +37,7 @@ import type {
   Page,
   RoomItem,
 } from './types';
+import { getUserProfile } from './users';
 
 function buildMembership(
   userId: string,
@@ -215,8 +226,9 @@ export async function createGroupRoom(input: {
   createdBy: string;
   members: Array<{ userId: string; role: MemberRole }>;
   now?: IsoTimestamp;
+  validateUsers?: boolean;
 }): Promise<CreateRoomResult> {
-  const { roomId, name, createdBy, members } = input;
+  const { roomId, name, createdBy, members, validateUsers } = input;
   const now = input.now ?? new Date().toISOString();
   const table = getTableName();
 
@@ -236,6 +248,17 @@ export async function createGroupRoom(input: {
   // A transaction holds at most 100 items: 1 meta + 1 counter + at most 98 members
   if (memberMap.size > 98) {
     throw new BadRequestError('A group room creation transaction supports at most 98 members');
+  }
+
+  // Verify that every initial member (including creator) exists before creating the group room
+  if (validateUsers) {
+    const userIds = Array.from(new Set([...memberMap.keys(), createdBy]));
+    const profiles = await Promise.all(userIds.map((uid) => getUserProfile(uid, true)));
+    for (let i = 0; i < userIds.length; i++) {
+      if (!profiles[i]) {
+        throw new NotFoundError(`User ${userIds[i]} does not exist`);
+      }
+    }
   }
 
   const memberItems = Array.from(memberMap.entries()).map(([userId, role]) =>
@@ -310,4 +333,202 @@ export async function createGroupRoom(input: {
   }
 
   return { room: existingRoom, created: false };
+}
+
+export interface AddMemberInput {
+  roomId: string;
+  userId: string;
+  role?: MemberRole;
+  addedBy: string;
+  now?: IsoTimestamp;
+}
+
+export interface AddMemberResult {
+  member: MembershipItem;
+}
+
+export async function addMember(input: AddMemberInput): Promise<AddMemberResult> {
+  const { roomId, userId, addedBy } = input;
+  const role = input.role ?? 'MEMBER';
+  const now = input.now ?? new Date().toISOString();
+  const table = getTableName();
+
+  const room = await getRoom(roomId, true);
+  if (!room) {
+    throw new NotFoundError(`Room ${roomId} not found`);
+  }
+  if (room.roomType !== 'GROUP') {
+    throw new BadRequestError('Cannot add members to a direct chat room');
+  }
+
+  const requesterMembership = await getMembership(addedBy, roomId);
+  if (requesterMembership?.role !== 'ADMIN') {
+    throw new ForbiddenError('Only room admins can add members');
+  }
+
+  const targetMembership = await getMembership(userId, roomId);
+  if (targetMembership) {
+    throw new ConflictError(`User ${userId} is already a member of this room`);
+  }
+
+  const targetProfile = await getUserProfile(userId, true);
+  if (!targetProfile) {
+    throw new NotFoundError(`User ${userId} does not exist`);
+  }
+
+  const newMembership = buildMembership(userId, roomId, role, now);
+  const { PK: adminPK, SK: adminSK } = membershipKeys(addedBy, roomId);
+
+  const transactItems: NonNullable<TransactWriteCommandInput['TransactItems']> = [
+    {
+      Put: {
+        TableName: table,
+        Item: newMembership,
+        ConditionExpression: 'attribute_not_exists(PK)',
+      },
+    },
+    {
+      Update: {
+        TableName: table,
+        Key: roomMetaKey(roomId),
+        UpdateExpression: 'SET memberCount = memberCount + :inc',
+        ConditionExpression: 'attribute_exists(PK)',
+        ExpressionAttributeValues: { ':inc': 1 },
+      },
+    },
+    {
+      ConditionCheck: {
+        TableName: table,
+        Key: { PK: adminPK, SK: adminSK },
+        ConditionExpression: 'attribute_exists(PK) AND #role = :adminRole',
+        ExpressionAttributeNames: { '#role': 'role' },
+        ExpressionAttributeValues: { ':adminRole': 'ADMIN' },
+      },
+    },
+  ];
+
+  try {
+    await sendWithRetry(() =>
+      getDocClient().send(
+        new TransactWriteCommand({
+          TransactItems: transactItems,
+        }),
+      ),
+    );
+  } catch (error) {
+    if (isTransactionCanceled(error)) {
+      const reasons = cancellationReasons(error);
+      if (conditionFailedAt(reasons, 0)) {
+        throw new ConflictError(`User ${userId} is already a member of this room`);
+      }
+      if (conditionFailedAt(reasons, 1)) {
+        throw new NotFoundError(`Room ${roomId} not found`);
+      }
+      if (reasons.length > 2 && conditionFailedAt(reasons, 2)) {
+        throw new ForbiddenError('Only room admins can add members');
+      }
+    }
+    throw error;
+  }
+
+  return { member: newMembership };
+}
+
+export interface RemoveMemberInput {
+  roomId: string;
+  userId: string;
+  removedBy: string;
+}
+
+export async function removeMember(input: RemoveMemberInput): Promise<{ success: boolean }> {
+  const { roomId, userId, removedBy } = input;
+  const table = getTableName();
+
+  const room = await getRoom(roomId, true);
+  if (!room) {
+    throw new NotFoundError(`Room ${roomId} not found`);
+  }
+  if (room.roomType !== 'GROUP') {
+    throw new BadRequestError('Cannot remove members from a direct chat room');
+  }
+
+  const requesterMembership = await getMembership(removedBy, roomId);
+  if (!requesterMembership) {
+    throw new ForbiddenError('You are not a member of this room');
+  }
+
+  // Caller must be an ADMIN or removing themselves (self-leave)
+  if (removedBy !== userId && requesterMembership.role !== 'ADMIN') {
+    throw new ForbiddenError('Only room admins can remove other members');
+  }
+
+  const targetMembership = await getMembership(userId, roomId);
+  if (!targetMembership) {
+    throw new NotFoundError(`User ${userId} is not a member of this room`);
+  }
+
+  // Ensure room has more than 1 member before removing
+  if (room.memberCount !== undefined && room.memberCount <= 1) {
+    throw new BadRequestError('Cannot remove the last member of a group room');
+  }
+
+  const { PK, SK } = membershipKeys(userId, roomId);
+
+  const transactItems: NonNullable<TransactWriteCommandInput['TransactItems']> = [
+    {
+      Delete: {
+        TableName: table,
+        Key: { PK, SK },
+        ConditionExpression: 'attribute_exists(PK)',
+      },
+    },
+    {
+      Update: {
+        TableName: table,
+        Key: roomMetaKey(roomId),
+        UpdateExpression: 'SET memberCount = memberCount - :dec',
+        ConditionExpression: 'attribute_exists(PK) AND memberCount > :minCount',
+        ExpressionAttributeValues: { ':dec': 1, ':minCount': 1 },
+      },
+    },
+  ];
+
+  if (removedBy !== userId) {
+    const { PK: adminPK, SK: adminSK } = membershipKeys(removedBy, roomId);
+    transactItems.push({
+      ConditionCheck: {
+        TableName: table,
+        Key: { PK: adminPK, SK: adminSK },
+        ConditionExpression: 'attribute_exists(PK) AND #role = :adminRole',
+        ExpressionAttributeNames: { '#role': 'role' },
+        ExpressionAttributeValues: { ':adminRole': 'ADMIN' },
+      },
+    });
+  }
+
+  try {
+    await sendWithRetry(() =>
+      getDocClient().send(
+        new TransactWriteCommand({
+          TransactItems: transactItems,
+        }),
+      ),
+    );
+  } catch (error) {
+    if (isTransactionCanceled(error)) {
+      const reasons = cancellationReasons(error);
+      if (conditionFailedAt(reasons, 0)) {
+        throw new NotFoundError(`User ${userId} is not a member of this room`);
+      }
+      if (conditionFailedAt(reasons, 1)) {
+        throw new BadRequestError('Cannot remove the last member of a group room');
+      }
+      if (reasons.length > 2 && conditionFailedAt(reasons, 2)) {
+        throw new ForbiddenError('Only room admins can remove other members');
+      }
+    }
+    throw error;
+  }
+
+  return { success: true };
 }

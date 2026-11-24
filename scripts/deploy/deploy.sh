@@ -117,6 +117,7 @@ DEFAULT_ARTIFACT_KEY=$(package_and_upload default)
 SEND_MESSAGE_ARTIFACT_KEY=$(package_and_upload sendMessage)
 USERS_ARTIFACT_KEY=$(package_and_upload users)
 MESSAGES_ARTIFACT_KEY=$(package_and_upload messages)
+ROOMS_ARTIFACT_KEY=$(package_and_upload rooms)
 
 # 6. Deploy the application stack
 echo "Deploying application stack..."
@@ -134,6 +135,7 @@ aws cloudformation deploy \
     SendMessageArtifactKey="$SEND_MESSAGE_ARTIFACT_KEY" \
     UsersArtifactKey="$USERS_ARTIFACT_KEY" \
     MessagesArtifactKey="$MESSAGES_ARTIFACT_KEY" \
+    RoomsArtifactKey="$ROOMS_ARTIFACT_KEY" \
   --capabilities CAPABILITY_NAMED_IAM \
   --region "$REGION" \
   --no-fail-on-empty-changeset

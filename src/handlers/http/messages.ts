@@ -1,5 +1,6 @@
 import type { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import {
+  getRoom,
   isMember,
   listLatestMessages,
   listMessagesAfter,
@@ -148,6 +149,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // Strongly consistent membership authorization check
     const member = await isMember(authUser.userId, roomId);
     if (!member) {
+      const room = await getRoom(roomId, true);
+      if (!room) {
+        throw new NotFoundError(`Room ${roomId} not found`);
+      }
       throw new ForbiddenError('You are not a member of this room');
     }
 

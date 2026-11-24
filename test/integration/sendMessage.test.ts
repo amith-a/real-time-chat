@@ -3,8 +3,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { handler as connectHandler } from '../../src/handlers/websocket/connect';
 import { handler as sendMessageHandler } from '../../src/handlers/websocket/sendMessage';
 import {
+  createGroupRoom,
   directRoomId,
+  ensureUserProfile,
   getConnection,
+  getIdempotencyRecord,
   getMessage,
   getPresence,
   getRoom,
@@ -262,6 +265,16 @@ describe('sendMessage integration (DynamoDB Local)', () => {
     )) as shared.WebSocketResponse;
     expect(resCharlie.statusCode).toBe(403);
     expect(JSON.parse(resCharlie.body).message).toBe('You are not a member of this room');
+
+    // Verify unauthorized request does not advance sequence or persist message
+    const unauthRecord = await getIdempotencyRecord(
+      'user-charlie',
+      expectedRoomId,
+      'client-msg-charlie',
+    );
+    expect(unauthRecord).toBeUndefined();
+    const finalSeq = await getRoomSequence(expectedRoomId);
+    expect(finalSeq).toBe(3);
   }, 15000);
 
   it('prunes dead connections on 410 GoneException during delivery', async () => {
@@ -335,4 +348,109 @@ describe('sendMessage integration (DynamoDB Local)', () => {
 
     shared.setManagementApiClient(undefined);
   }, 15000);
+
+  it('enforces group message authorization: member sends, nonmember rejected, rejected message never persisted', async () => {
+    const groupRoomId = 'grp-auth-test-room';
+    const memberId = 'user-group-member';
+    const outsiderId = 'user-group-outsider';
+
+    // 1. Set up users and group room
+    await ensureUserProfile({ userId: memberId, email: `${memberId}@example.com` });
+    await ensureUserProfile({ userId: outsiderId, email: `${outsiderId}@example.com` });
+
+    await createGroupRoom({
+      roomId: groupRoomId,
+      createdBy: memberId,
+      name: 'Auth Test Group',
+      members: [{ userId: memberId, role: 'ADMIN' }],
+      validateUsers: true,
+    });
+
+    // Initial sequence is 0
+    expect(await getRoomSequence(groupRoomId)).toBe(0);
+
+    // Connect member
+    await connectHandler(
+      makeWsEvent({
+        connectionId: 'conn-group-member-1',
+        routeKey: '$connect',
+        authorizer: { userId: memberId, email: `${memberId}@example.com` },
+      }),
+      mockContext,
+      mockCallback,
+    );
+
+    // Mock API Gateway Management API client so WebSocket postToConnection doesn't fail
+    const mockMgmtClient = { send: vi.fn().mockResolvedValue({}) };
+    shared.setManagementApiClient(
+      mockMgmtClient as unknown as import('@aws-sdk/client-apigatewaymanagementapi').ApiGatewayManagementApiClient,
+    );
+
+    try {
+      // 1. A group member can send a message
+      const memberSendEvent = makeWsEvent({
+        connectionId: 'conn-group-member-1',
+        routeKey: 'sendMessage',
+        authorizer: { userId: memberId, email: `${memberId}@example.com` },
+        body: JSON.stringify({
+          action: 'sendMessage',
+          messageId: 'valid-member-msg-1',
+          roomId: groupRoomId,
+          body: 'Hello from group member!',
+        }),
+      });
+
+      const memberRes = (await sendMessageHandler(
+        memberSendEvent,
+        mockContext,
+        mockCallback,
+      )) as shared.WebSocketResponse;
+
+      expect(memberRes.statusCode).toBe(200);
+      const memberAck = JSON.parse(memberRes.body);
+      expect(memberAck.sequenceNumber).toBe(1);
+      expect(memberAck.isDuplicate).toBe(false);
+
+      // Verify member's message is persisted
+      const persistedMessage = await getMessage(groupRoomId, 1);
+      expect(persistedMessage).toBeDefined();
+      expect(persistedMessage?.content).toBe('Hello from group member!');
+      expect(persistedMessage?.senderId).toBe(memberId);
+      expect(await getRoomSequence(groupRoomId)).toBe(1);
+
+      // 2. A nonmember cannot send a message
+      const outsiderSendEvent = makeWsEvent({
+        connectionId: 'conn-outsider-1',
+        routeKey: 'sendMessage',
+        authorizer: { userId: outsiderId, email: `${outsiderId}@example.com` },
+        body: JSON.stringify({
+          action: 'sendMessage',
+          messageId: 'unauth-outsider-msg-2',
+          roomId: groupRoomId,
+          body: 'Unauthorized intrusion!',
+        }),
+      });
+
+      const outsiderRes = (await sendMessageHandler(
+        outsiderSendEvent,
+        mockContext,
+        mockCallback,
+      )) as shared.WebSocketResponse;
+
+      expect(outsiderRes.statusCode).toBe(403);
+      expect(JSON.parse(outsiderRes.body).message).toBe('You are not a member of this room');
+
+      // 3. A rejected message does not get persisted or increment the sequence counter
+      // Counter is still 1
+      expect(await getRoomSequence(groupRoomId)).toBe(1);
+      // No message at sequence 2
+      expect(await getMessage(groupRoomId, 2)).toBeUndefined();
+      // No idempotency record for outsider's message
+      expect(
+        await getIdempotencyRecord(outsiderId, groupRoomId, 'unauth-outsider-msg-2'),
+      ).toBeUndefined();
+    } finally {
+      shared.setManagementApiClient(undefined);
+    }
+  });
 });

@@ -121,6 +121,18 @@ describe('History API Integration (DynamoDB Local)', () => {
     expect(body.message).toBe('You are not a member of this room');
   });
 
+  it('returns 404 Not Found when room does not exist', async () => {
+    const event = createHttpEvent({
+      userId: userAlice,
+      roomId: 'nonexistent-room-999',
+    });
+    const res = (await messagesHandler(event, mockContext, mockCallback)) as HttpResponse;
+
+    expect(res.statusCode).toBe(404);
+    const body = JSON.parse(res.body);
+    expect(body.message).toContain('Room nonexistent-room-999 not found');
+  });
+
   it('rejects requests with missing sub claim with 401 Unauthorized', async () => {
     const event = createHttpEvent({
       roomId,

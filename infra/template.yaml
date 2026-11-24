@@ -43,6 +43,10 @@ Parameters:
     Description: S3 object key for the Messages HTTP Lambda ZIP
     Type: String
 
+  RoomsArtifactKey:
+    Description: S3 object key for the Rooms HTTP Lambda ZIP
+    Type: String
+
 Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
@@ -943,6 +947,159 @@ Resources:
       AuthorizerId: !Ref HttpJwtAuthorizer
       Target: !Sub "integrations/${MessagesHttpIntegration}"
 
+  RoomsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-rooms"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  RoomsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-rooms-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  RoomsLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-rooms-logging"
+      Roles:
+        - !Ref RoomsExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt RoomsLogGroup.Arn
+              - !Sub "${RoomsLogGroup.Arn}:*"
+
+  RoomsDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-rooms-dynamodb"
+      Roles:
+        - !Ref RoomsExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+            Resource:
+              - !GetAtt ChatTable.Arn
+              - !Sub "${ChatTable.Arn}/index/*"
+
+  RoomsFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - RoomsLogGroup
+      - RoomsLoggingPolicy
+      - RoomsDynamoDBPolicy
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-rooms"
+      Runtime: nodejs22.x
+      Handler: rooms.handler
+      Timeout: 10
+      Role: !GetAtt RoomsExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref RoomsArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ChatTable
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  RoomsHttpIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      PayloadFormatVersion: "2.0"
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt RoomsFunction.Arn
+
+  RoomsInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt RoomsFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*/*"
+        - ApiId: !Ref HttpApi
+
+  CreateRoomRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "POST /rooms"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref HttpJwtAuthorizer
+      Target: !Sub "integrations/${RoomsHttpIntegration}"
+
+  ListMyRoomsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "GET /rooms"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref HttpJwtAuthorizer
+      Target: !Sub "integrations/${RoomsHttpIntegration}"
+
+  GetRoomRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "GET /rooms/{roomId}"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref HttpJwtAuthorizer
+      Target: !Sub "integrations/${RoomsHttpIntegration}"
+
+  ListRoomMembersRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "GET /rooms/{roomId}/members"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref HttpJwtAuthorizer
+      Target: !Sub "integrations/${RoomsHttpIntegration}"
+
+  AddRoomMemberRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "POST /rooms/{roomId}/members"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref HttpJwtAuthorizer
+      Target: !Sub "integrations/${RoomsHttpIntegration}"
+
+  RemoveRoomMemberRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "DELETE /rooms/{roomId}/members/{userId}"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref HttpJwtAuthorizer
+      Target: !Sub "integrations/${RoomsHttpIntegration}"
+
 Outputs:
   UserPoolId:
     Description: ID of the created Cognito User Pool
@@ -963,6 +1120,10 @@ Outputs:
   MessagesFunctionArn:
     Description: ARN of the Messages HTTP Lambda Function
     Value: !GetAtt MessagesFunction.Arn
+
+  RoomsFunctionArn:
+    Description: ARN of the Rooms HTTP Lambda Function
+    Value: !GetAtt RoomsFunction.Arn
 
   WebSocketApiId:
     Description: WebSocket API ID
