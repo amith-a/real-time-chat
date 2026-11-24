@@ -39,6 +39,10 @@ Parameters:
     Description: S3 object key for the Users HTTP Lambda ZIP
     Type: String
 
+  MessagesArtifactKey:
+    Description: S3 object key for the Messages HTTP Lambda ZIP
+    Type: String
+
 Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
@@ -834,6 +838,111 @@ Resources:
       AuthorizerId: !Ref HttpJwtAuthorizer
       Target: !Sub "integrations/${UsersHttpIntegration}"
 
+  MessagesLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-messages"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  MessagesExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-messages-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  MessagesLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-messages-logging"
+      Roles:
+        - !Ref MessagesExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt MessagesLogGroup.Arn
+              - !Sub "${MessagesLogGroup.Arn}:*"
+
+  MessagesDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-messages-dynamodb"
+      Roles:
+        - !Ref MessagesExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+            Resource:
+              - !GetAtt ChatTable.Arn
+              - !Sub "${ChatTable.Arn}/index/*"
+
+  MessagesFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - MessagesLogGroup
+      - MessagesLoggingPolicy
+      - MessagesDynamoDBPolicy
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-messages"
+      Runtime: nodejs22.x
+      Handler: messages.handler
+      Timeout: 10
+      Role: !GetAtt MessagesExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref MessagesArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ChatTable
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  MessagesHttpIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      PayloadFormatVersion: "2.0"
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt MessagesFunction.Arn
+
+  MessagesInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MessagesFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*/*"
+        - ApiId: !Ref HttpApi
+
+  GetRoomMessagesRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "GET /rooms/{roomId}/messages"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref HttpJwtAuthorizer
+      Target: !Sub "integrations/${MessagesHttpIntegration}"
+
 Outputs:
   UserPoolId:
     Description: ID of the created Cognito User Pool
@@ -850,6 +959,10 @@ Outputs:
   SendMessageFunctionArn:
     Description: ARN of the SendMessage Lambda Function
     Value: !GetAtt SendMessageFunction.Arn
+
+  MessagesFunctionArn:
+    Description: ARN of the Messages HTTP Lambda Function
+    Value: !GetAtt MessagesFunction.Arn
 
   WebSocketApiId:
     Description: WebSocket API ID
