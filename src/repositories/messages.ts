@@ -45,6 +45,22 @@ export async function getRoomSequence(roomId: string): Promise<number> {
   return counter.sequenceNumber;
 }
 
+/** AP9 (single): get a specific message by roomId and sequenceNumber. */
+export async function getMessage(
+  roomId: string,
+  sequenceNumber: number,
+  consistent = false,
+): Promise<MessageItem | undefined> {
+  const out = await getDocClient().send(
+    new GetCommand({
+      TableName: getTableName(),
+      Key: messageKey(roomId, sequenceNumber),
+      ConsistentRead: consistent,
+    }),
+  );
+  return out.Item as MessageItem | undefined;
+}
+
 /** AP9: latest messages, newest first. Only MSG# items are returned (never META or COUNTER). */
 export function listLatestMessages(
   roomId: string,

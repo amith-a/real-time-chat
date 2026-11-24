@@ -1,5 +1,7 @@
 export * from './error-handler';
 export * from './errors';
 export * from './logger';
+export * from './management-api';
 export * from './responses';
+export * from './schemas';
 export * from './websocket';

@@ -114,6 +114,8 @@ AUTHORIZER_ARTIFACT_KEY=$(package_and_upload authorizer authorizer)
 CONNECT_ARTIFACT_KEY=$(package_and_upload connect connect)
 DISCONNECT_ARTIFACT_KEY=$(package_and_upload disconnect disconnect)
 DEFAULT_ARTIFACT_KEY=$(package_and_upload default default)
+SEND_MESSAGE_ARTIFACT_KEY=$(package_and_upload sendMessage sendMessage)
+USERS_ARTIFACT_KEY=$(package_and_upload users users)
 
 # 6. Deploy the application stack
 echo "Deploying application stack..."
@@ -128,6 +130,8 @@ aws cloudformation deploy \
     ConnectArtifactKey="$CONNECT_ARTIFACT_KEY" \
     DisconnectArtifactKey="$DISCONNECT_ARTIFACT_KEY" \
     DefaultArtifactKey="$DEFAULT_ARTIFACT_KEY" \
+    SendMessageArtifactKey="$SEND_MESSAGE_ARTIFACT_KEY" \
+    UsersArtifactKey="$USERS_ARTIFACT_KEY" \
   --capabilities CAPABILITY_NAMED_IAM \
   --region "$REGION" \
   --no-fail-on-empty-changeset

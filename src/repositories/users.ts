@@ -47,6 +47,30 @@ export function listUsers(
   );
 }
 
+/** Search users by email prefix via GSI1. Falls back to listUsers if query is empty. */
+export function searchUsers(
+  query: string,
+  options: { limit?: number; startKey?: Record<string, unknown> } = {},
+): Promise<Page<UserProfileItem>> {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return listUsers(options);
+  }
+
+  return queryPage<UserProfileItem>(
+    {
+      IndexName: GSI1_NAME,
+      KeyConditionExpression: 'GSI1PK = :gsi1pk AND begins_with(GSI1SK, :prefix)',
+      ExpressionAttributeValues: {
+        ':gsi1pk': 'USERS',
+        ':prefix': `EMAIL#${normalized}`,
+      },
+      Limit: options.limit ?? 20,
+    },
+    options.startKey,
+  );
+}
+
 /**
  * Ensures a user profile exists in DynamoDB (creating it on first connection or refreshing claims).
  * Preserves original createdAt and any custom attributes already stored on the profile.

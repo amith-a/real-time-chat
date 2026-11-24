@@ -1,11 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { handler as usersHttpHandler } from '../../src/handlers/http/users';
 import {
   ensureUserProfile,
   getUserByEmail,
   getUserProfile,
   listUsers,
   putUserProfile,
+  searchUsers,
 } from '../../src/repositories';
+import type { HttpResponse } from '../../src/shared';
 import { createTestTable, pollUntil, safeTeardown } from './helpers';
 
 describe('user profiles (DynamoDB Local)', () => {
@@ -117,5 +120,61 @@ describe('user profiles (DynamoDB Local)', () => {
     );
 
     expect(page.items.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('searches users by email prefix via GSI1', async () => {
+    await ensureUserProfile({
+      userId: 'u501',
+      email: 'eve.search@example.com',
+      username: 'evesearch',
+    });
+    await ensureUserProfile({
+      userId: 'u502',
+      email: 'eve.other@example.com',
+      username: 'eveother',
+    });
+    await ensureUserProfile({ userId: 'u503', email: 'frank@example.com', username: 'frank' });
+
+    // Poll until indexed and search by prefix "eve.sea"
+    const searchResult = await pollUntil(
+      () => searchUsers('eve.sea'),
+      (res) => res.items.some((u) => u.userId === 'u501'),
+      { description: 'user found by prefix in searchUsers' },
+    );
+
+    expect(searchResult.items).toHaveLength(1);
+    expect(searchResult.items[0].userId).toBe('u501');
+    expect(searchResult.items[0].email).toBe('eve.search@example.com');
+  });
+
+  it('executes users HTTP handler end-to-end against DynamoDB Local', async () => {
+    await ensureUserProfile({
+      userId: 'u601',
+      email: 'grace@example.com',
+      username: 'grace',
+      displayName: 'Grace Hopper',
+    });
+
+    const mockEvent = {
+      version: '2.0',
+      routeKey: 'GET /users/u601',
+      rawPath: '/users/u601',
+      pathParameters: { userId: 'u601' },
+      requestContext: {
+        http: { method: 'GET', path: '/users/u601' },
+        requestId: 'req-test-1',
+        authorizer: {
+          jwt: {
+            claims: { sub: 'u601', email: 'grace@example.com' },
+          },
+        },
+      },
+    } as unknown as Parameters<typeof usersHttpHandler>[0];
+
+    const res = (await usersHttpHandler(mockEvent, {} as never, () => {})) as HttpResponse;
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.userId).toBe('u601');
+    expect(body.displayName).toBe('Grace Hopper');
   });
 });

@@ -31,6 +31,14 @@ Parameters:
     Description: S3 object key for the Default Lambda ZIP
     Type: String
 
+  SendMessageArtifactKey:
+    Description: S3 object key for the SendMessage Lambda ZIP
+    Type: String
+
+  UsersArtifactKey:
+    Description: S3 object key for the Users HTTP Lambda ZIP
+    Type: String
+
 Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
@@ -205,6 +213,16 @@ Resources:
         - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
         - FunctionArn: !GetAtt DefaultFunction.Arn
 
+  SendMessageIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt SendMessageFunction.Arn
+
   ConnectInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -235,6 +253,16 @@ Resources:
         - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$default"
         - ApiId: !Ref WebSocketApi
 
+  SendMessageInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt SendMessageFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/sendMessage"
+        - ApiId: !Ref WebSocketApi
+
   ConnectRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -260,7 +288,22 @@ Resources:
       AuthorizationType: NONE
       Target: !Sub "integrations/${DefaultIntegration}"
 
-  WebSocketDeployment:
+  SendMessageRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "sendMessage"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${SendMessageIntegration}"
+  
+  SendMessageRouteResponse:
+    Type: AWS::ApiGatewayV2::RouteResponse
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteId: !Ref SendMessageRoute
+      RouteResponseKey: "$default"
+
+  WebSocketDeploymentV2:
     Type: AWS::ApiGatewayV2::Deployment
     DependsOn:
       - ConnectRoute
@@ -272,6 +315,10 @@ Resources:
       - DefaultRoute
       - DefaultIntegration
       - DefaultInvokePermission
+      - SendMessageRoute
+      - SendMessageIntegration
+      - SendMessageInvokePermission
+      - SendMessageRouteResponse
     Properties:
       ApiId: !Ref WebSocketApi
       Description: "WebSocket API deployment v2"
@@ -281,7 +328,7 @@ Resources:
     Properties:
       ApiId: !Ref WebSocketApi
       StageName: !Ref Environment
-      DeploymentId: !Ref WebSocketDeployment
+      DeploymentId: !Ref WebSocketDeploymentV2
 
   DisconnectLogGroup:
     Type: AWS::Logs::LogGroup
@@ -360,6 +407,49 @@ Resources:
         Variables:
           TABLE_NAME: !Ref ChatTable
           API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+    UpdateReplacePolicy: Delete
+
+  SendMessageLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-send-message"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  SendMessageExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-send-message-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  SendMessageFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - SendMessageLogGroup
+      - SendMessageLoggingPolicy
+      - SendMessageDynamoDBPolicy
+      - SendMessageManageConnectionsPolicy
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-send-message"
+      Runtime: nodejs22.x
+      Handler: sendMessage.handler
+      Timeout: 20
+      Role: !GetAtt SendMessageExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref SendMessageArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ChatTable
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+    DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
 
   ChatTable:
@@ -533,6 +623,217 @@ Resources:
             Resource:
               - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
 
+  SendMessageLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-send-message-logging"
+      Roles:
+        - !Ref SendMessageExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt SendMessageLogGroup.Arn
+              - !Sub "${SendMessageLogGroup.Arn}:*"
+
+  SendMessageDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-send-message-dynamodb"
+      Roles:
+        - !Ref SendMessageExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+            Resource:
+              - !GetAtt ChatTable.Arn
+              - !Sub "${ChatTable.Arn}/index/*"
+
+  SendMessageManageConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-send-message-manage-connections"
+      Roles:
+        - !Ref SendMessageExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - execute-api:ManageConnections
+            Resource:
+              - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-http-api"
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        MaxAge: 300
+
+  HttpJwtAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref HttpApi
+      AuthorizerType: JWT
+      Name: CognitoJwtAuthorizer
+      IdentitySource:
+        - "$request.header.Authorization"
+      JwtConfiguration:
+        Audience:
+          - !Ref UserPoolClient
+        Issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: !Ref Environment
+      AutoDeploy: true
+
+  UsersLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-users"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  UsersExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-users-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  UsersLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-users-logging"
+      Roles:
+        - !Ref UsersExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt UsersLogGroup.Arn
+              - !Sub "${UsersLogGroup.Arn}:*"
+
+  UsersDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-users-dynamodb"
+      Roles:
+        - !Ref UsersExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+            Resource:
+              - !GetAtt ChatTable.Arn
+              - !Sub "${ChatTable.Arn}/index/*"
+
+  UsersFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - UsersLogGroup
+      - UsersLoggingPolicy
+      - UsersDynamoDBPolicy
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-users"
+      Runtime: nodejs22.x
+      Handler: users.handler
+      Timeout: 10
+      Role: !GetAtt UsersExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref UsersArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ChatTable
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  UsersHttpIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      PayloadFormatVersion: "2.0"
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt UsersFunction.Arn
+
+  UsersInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt UsersFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*/*"
+        - ApiId: !Ref HttpApi
+
+  ListUsersRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "GET /users"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref HttpJwtAuthorizer
+      Target: !Sub "integrations/${UsersHttpIntegration}"
+  
+  GetMeRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "GET /users/me"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref HttpJwtAuthorizer
+      Target: !Sub "integrations/${UsersHttpIntegration}"
+
+  GetUserRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "GET /users/{userId}"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref HttpJwtAuthorizer
+      Target: !Sub "integrations/${UsersHttpIntegration}"
+
 Outputs:
   UserPoolId:
     Description: ID of the created Cognito User Pool
@@ -546,6 +847,10 @@ Outputs:
     Description: ARN of the WebSocket Lambda Authorizer Function
     Value: !GetAtt AuthorizerFunction.Arn
 
+  SendMessageFunctionArn:
+    Description: ARN of the SendMessage Lambda Function
+    Value: !GetAtt SendMessageFunction.Arn
+
   WebSocketApiId:
     Description: WebSocket API ID
     Value: !Ref WebSocketApi
@@ -553,6 +858,10 @@ Outputs:
   WebSocketEndpoint:
     Description: WebSocket endpoint for the deployed stage
     Value: !Sub "wss://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+
+  HttpApiEndpoint:
+    Description: HTTP API endpoint for user search and directory
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
 
   ChatTableName:
     Description: Name of the DynamoDB Chat Table

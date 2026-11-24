@@ -1,4 +1,4 @@
-import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { type DynamoDBDocumentClient, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createDirectRoom,
@@ -439,6 +439,59 @@ describe('DynamoDB Repository Layer', () => {
       await expect(createMessage({ ...base, maxAttempts: -1 })).rejects.toThrow(BadRequestError);
       await expect(createMessage({ ...base, maxAttempts: 11 })).rejects.toThrow(BadRequestError);
       await expect(createMessage({ ...base, maxAttempts: 2.5 })).rejects.toThrow(BadRequestError);
+    });
+
+    it('exhausts retries and rejects with 503 AppError when counter conflicts persist', async () => {
+      const conflictError = createCancelError([
+        { Code: 'ConditionalCheckFailed' }, // 0: counter condition failed
+        { Code: 'None' },
+        { Code: 'None' },
+      ]);
+
+      mockSend
+        // 1. Initial idempotency check: not found
+        .mockResolvedValueOnce({ Item: undefined })
+        // Attempt 1: read counter sequence = 10
+        .mockResolvedValueOnce({ Item: { sequenceNumber: 10 } })
+        // Attempt 1: TransactWrite fails due to counter race
+        .mockRejectedValueOnce(conflictError)
+        // Attempt 2: read counter sequence = 11
+        .mockResolvedValueOnce({ Item: { sequenceNumber: 11 } })
+        // Attempt 2: TransactWrite fails due to counter race
+        .mockRejectedValueOnce(conflictError)
+        // Attempt 3: read counter sequence = 12
+        .mockResolvedValueOnce({ Item: { sequenceNumber: 12 } })
+        // Attempt 3: TransactWrite fails due to counter race
+        .mockRejectedValueOnce(conflictError);
+
+      let thrownError: unknown;
+      try {
+        await createMessage({
+          roomId: 'room-exhaustion',
+          senderId: 'user-sender',
+          clientMessageId: 'client-exhaustion-test',
+          content: 'Exhaustion test message',
+          maxAttempts: 3,
+        });
+      } catch (err) {
+        thrownError = err;
+      }
+
+      // 4. Verify that it eventually rejects with the expected 503 AppError
+      expect(thrownError).toBeInstanceOf(AppError);
+      const appError = thrownError as AppError;
+      expect(appError.statusCode).toBe(503);
+      expect(appError.message).toBe('Too much contention allocating a message sequence');
+      expect(appError.details).toEqual({ roomId: 'room-exhaustion' });
+
+      // 5. Verify that it performs exactly 3 transaction attempts
+      const transactCalls = mockSend.mock.calls.filter(
+        (call) => call[0] instanceof TransactWriteCommand,
+      );
+      expect(transactCalls).toHaveLength(3);
+
+      // 6. Verify that it does not exceed the configured retry limit (1 idempotency read + 3 attempts * 2 calls)
+      expect(mockSend).toHaveBeenCalledTimes(7);
     });
 
     it('calculates idempotency TTL deterministically from injected now timestamp', async () => {

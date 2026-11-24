@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as repositories from '../src/repositories';
 import {
   AppError,
   BadRequestError,
@@ -7,12 +8,17 @@ import {
   getAuthenticatedUser,
   getAuthorizerUser,
   getConnectionId,
+  getManagementApiClient,
   getRouteKey,
   getWebSocketContext,
   isAppError,
   NotFoundError,
   parseJsonBody,
+  postToConnection,
+  resetManagementApiClients,
   sanitize,
+  sendMessageSchema,
+  setManagementApiClient,
   UnauthorizedError,
 } from '../src/shared';
 
@@ -187,6 +193,468 @@ describe('Shared Utilities', () => {
         email: 'u1@example.com',
         username: undefined,
       });
+    });
+  });
+
+  describe('Schemas', () => {
+    describe('sendMessageSchema - Valid Payloads', () => {
+      it('validates a minimal direct 1:1 message payload and defaults messageType to TEXT', () => {
+        const parsed = sendMessageSchema.parse({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          recipientUserId: 'user-456',
+          body: 'Hello',
+        });
+
+        expect(parsed.action).toBe('sendMessage');
+        expect(parsed.messageId).toBe('msg-1');
+        expect(parsed.recipientUserId).toBe('user-456');
+        expect(parsed.roomId).toBeUndefined();
+        expect(parsed.body).toBe('Hello');
+        expect(parsed.messageType).toBe('TEXT');
+      });
+
+      it('validates direct message with explicit messageType (IMAGE and FILE)', () => {
+        const imageMsg = sendMessageSchema.parse({
+          action: 'sendMessage',
+          messageId: 'msg-img',
+          recipientUserId: 'user-456',
+          body: 'https://example.com/img.png',
+          messageType: 'IMAGE',
+        });
+        expect(imageMsg.messageType).toBe('IMAGE');
+
+        const fileMsg = sendMessageSchema.parse({
+          action: 'sendMessage',
+          messageId: 'msg-file',
+          recipientUserId: 'user-456',
+          body: 'https://example.com/doc.pdf',
+          messageType: 'FILE',
+        });
+        expect(fileMsg.messageType).toBe('FILE');
+      });
+
+      it('validates a minimal existing-room message payload', () => {
+        const parsed = sendMessageSchema.parse({
+          action: 'sendMessage',
+          messageId: 'msg-2',
+          roomId: 'room-123',
+          body: 'Hello room',
+        });
+
+        expect(parsed.action).toBe('sendMessage');
+        expect(parsed.messageId).toBe('msg-2');
+        expect(parsed.roomId).toBe('room-123');
+        expect(parsed.recipientUserId).toBeUndefined();
+        expect(parsed.body).toBe('Hello room');
+        expect(parsed.messageType).toBe('TEXT');
+      });
+
+      it('validates existing-room message with explicit messageType TEXT', () => {
+        const parsed = sendMessageSchema.parse({
+          action: 'sendMessage',
+          messageId: 'msg-room-text',
+          roomId: 'room-123',
+          body: 'Explicit text message',
+          messageType: 'TEXT',
+        });
+
+        expect(parsed.messageType).toBe('TEXT');
+      });
+    });
+
+    describe('sendMessageSchema - Missing Fields & Action Validation', () => {
+      it('rejects when action is missing or incorrect', () => {
+        const missingAction = sendMessageSchema.safeParse({
+          messageId: 'msg-1',
+          recipientUserId: 'bob',
+          body: 'Hello',
+        });
+        expect(missingAction.success).toBe(false);
+
+        const invalidAction = sendMessageSchema.safeParse({
+          action: 'otherAction',
+          messageId: 'msg-1',
+          recipientUserId: 'bob',
+          body: 'Hello',
+        });
+        expect(invalidAction.success).toBe(false);
+      });
+
+      it('rejects when messageId is missing', () => {
+        const result = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          recipientUserId: 'bob',
+          body: 'Hello',
+        });
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.issues.some((i) => i.path.includes('messageId'))).toBe(true);
+        }
+      });
+
+      it('rejects when body is missing', () => {
+        const result = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          recipientUserId: 'bob',
+        });
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.issues.some((i) => i.path.includes('body'))).toBe(true);
+        }
+      });
+
+      it('rejects when neither recipientUserId nor roomId is provided', () => {
+        const result = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'msg-4',
+          body: 'Hello',
+        });
+
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.issues[0].message).toBe(
+            'Either recipientUserId or roomId must be provided',
+          );
+        }
+      });
+
+      it('rejects when both recipientUserId and roomId are provided', () => {
+        const result = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'msg-3',
+          recipientUserId: 'bob',
+          roomId: 'room-1',
+          body: 'Hello',
+        });
+
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.issues[0].message).toBe(
+            'Cannot provide both recipientUserId and roomId in the same request',
+          );
+        }
+      });
+    });
+
+    describe('sendMessageSchema - Message Types', () => {
+      it('rejects unsupported message types', () => {
+        for (const invalidType of ['VIDEO', 'AUDIO', 'system', 'CUSTOM', '', 123]) {
+          const result = sendMessageSchema.safeParse({
+            action: 'sendMessage',
+            messageId: 'msg-1',
+            recipientUserId: 'bob',
+            body: 'Hello',
+            messageType: invalidType,
+          });
+          expect(result.success).toBe(false);
+        }
+      });
+    });
+
+    describe('sendMessageSchema - Whitespace-only & Empty Content', () => {
+      it('rejects empty or whitespace-only messageId', () => {
+        const emptyId = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: '',
+          recipientUserId: 'bob',
+          body: 'Hello',
+        });
+        expect(emptyId.success).toBe(false);
+
+        const whitespaceId = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: '   ',
+          recipientUserId: 'bob',
+          body: 'Hello',
+        });
+        expect(whitespaceId.success).toBe(false);
+      });
+
+      it('rejects empty or whitespace-only body', () => {
+        const emptyBody = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          recipientUserId: 'bob',
+          body: '',
+        });
+        expect(emptyBody.success).toBe(false);
+
+        const whitespaceBody = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          recipientUserId: 'bob',
+          body: '   \n\t  ',
+        });
+        expect(whitespaceBody.success).toBe(false);
+        if (!whitespaceBody.success) {
+          expect(
+            whitespaceBody.error.issues.some((i) => i.message.includes('body cannot be empty')),
+          ).toBe(true);
+        }
+      });
+
+      it('rejects whitespace-only recipientUserId when no roomId is provided', () => {
+        const result = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          recipientUserId: '   ',
+          body: 'Hello',
+        });
+        expect(result.success).toBe(false);
+      });
+
+      it('rejects whitespace-only roomId when no recipientUserId is provided', () => {
+        const result = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          roomId: '   ',
+          body: 'Hello',
+        });
+        expect(result.success).toBe(false);
+      });
+    });
+
+    describe('sendMessageSchema - Boundary Lengths', () => {
+      it('accepts messageId at boundary min (1 char) and max (128 chars)', () => {
+        const minId = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'a',
+          recipientUserId: 'bob',
+          body: 'Hello',
+        });
+        expect(minId.success).toBe(true);
+
+        const maxId = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'a'.repeat(128),
+          recipientUserId: 'bob',
+          body: 'Hello',
+        });
+        expect(maxId.success).toBe(true);
+      });
+
+      it('rejects messageId exceeding 128 characters', () => {
+        const overLimit = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'a'.repeat(129),
+          recipientUserId: 'bob',
+          body: 'Hello',
+        });
+        expect(overLimit.success).toBe(false);
+        if (!overLimit.success) {
+          expect(overLimit.error.issues[0].message).toBe(
+            'messageId must not exceed 128 characters',
+          );
+        }
+      });
+
+      it('accepts body at boundary min (1 char) and max (4096 chars)', () => {
+        const minBody = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          recipientUserId: 'bob',
+          body: 'x',
+        });
+        expect(minBody.success).toBe(true);
+
+        const maxBody = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          recipientUserId: 'bob',
+          body: 'x'.repeat(4096),
+        });
+        expect(maxBody.success).toBe(true);
+      });
+
+      it('rejects body exceeding 4096 characters', () => {
+        const overBody = sendMessageSchema.safeParse({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          recipientUserId: 'bob',
+          body: 'x'.repeat(4097),
+        });
+        expect(overBody.success).toBe(false);
+        if (!overBody.success) {
+          expect(overBody.error.issues[0].message).toBe('body must not exceed 4096 characters');
+        }
+      });
+    });
+
+    describe('sendMessageSchema - Trimming & Field Sanitization', () => {
+      it('trims leading and trailing whitespace from messageId, recipientUserId, roomId, and body', () => {
+        const directParsed = sendMessageSchema.parse({
+          action: 'sendMessage',
+          messageId: '  msg-padded  ',
+          recipientUserId: '  user-bob  ',
+          body: '  Padded message text  ',
+        });
+        expect(directParsed.messageId).toBe('msg-padded');
+        expect(directParsed.recipientUserId).toBe('user-bob');
+        expect(directParsed.body).toBe('Padded message text');
+
+        const roomParsed = sendMessageSchema.parse({
+          action: 'sendMessage',
+          messageId: '  msg-padded-2  ',
+          roomId: '  room-123  ',
+          body: '  Room message text  ',
+        });
+        expect(roomParsed.messageId).toBe('msg-padded-2');
+        expect(roomParsed.roomId).toBe('room-123');
+        expect(roomParsed.body).toBe('Room message text');
+      });
+
+      it('strips unexpected/extra fields by default in standard Zod object schema', () => {
+        const parsed = sendMessageSchema.parse({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          recipientUserId: 'bob',
+          body: 'Hello',
+          unexpectedField: 'ignored',
+          nested: { hacked: true },
+        } as Record<string, unknown>);
+
+        expect(parsed).not.toHaveProperty('unexpectedField');
+        expect(parsed).not.toHaveProperty('nested');
+        expect(parsed).toEqual({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          recipientUserId: 'bob',
+          body: 'Hello',
+          messageType: 'TEXT',
+        });
+      });
+    });
+  });
+
+  describe('Management API (postToConnection)', () => {
+    it('successfully sends payload to connection', async () => {
+      const mockClient = {
+        send: vi.fn().mockResolvedValue({}),
+      };
+
+      const result = await postToConnection({
+        connectionId: 'conn-1',
+        payload: { action: 'message', text: 'hi' },
+        client:
+          mockClient as unknown as import('@aws-sdk/client-apigatewaymanagementapi').ApiGatewayManagementApiClient,
+      });
+
+      expect(result).toBe(true);
+      expect(mockClient.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('handles GoneException by auto-pruning connection and returning false', async () => {
+      const removeConnectionSpy = vi
+        .spyOn(repositories, 'removeConnection')
+        .mockResolvedValue('REMOVED');
+
+      const goneError = new Error('Gone');
+      goneError.name = 'GoneException';
+      (goneError as { statusCode?: number }).statusCode = 410;
+
+      const mockClient = {
+        send: vi.fn().mockRejectedValue(goneError),
+      };
+
+      const result = await postToConnection({
+        connectionId: 'conn-dead',
+        userId: 'user-bob',
+        payload: { action: 'message' },
+        client:
+          mockClient as unknown as import('@aws-sdk/client-apigatewaymanagementapi').ApiGatewayManagementApiClient,
+      });
+
+      expect(result).toBe(false);
+      expect(removeConnectionSpy).toHaveBeenCalledWith({
+        userId: 'user-bob',
+        connectionId: 'conn-dead',
+      });
+    });
+
+    it('rethrows non-410 errors', async () => {
+      const networkError = new Error('Network timeout');
+      const mockClient = {
+        send: vi.fn().mockRejectedValue(networkError),
+      };
+
+      await expect(
+        postToConnection({
+          connectionId: 'conn-1',
+          payload: { action: 'message' },
+          client:
+            mockClient as unknown as import('@aws-sdk/client-apigatewaymanagementapi').ApiGatewayManagementApiClient,
+        }),
+      ).rejects.toThrow('Network timeout');
+    });
+  });
+
+  describe('Management API Client Caching', () => {
+    const originalEnv = process.env.API_GATEWAY_MANAGEMENT_ENDPOINT;
+
+    afterEach(() => {
+      resetManagementApiClients();
+      if (originalEnv !== undefined) {
+        process.env.API_GATEWAY_MANAGEMENT_ENDPOINT = originalEnv;
+      } else {
+        delete process.env.API_GATEWAY_MANAGEMENT_ENDPOINT;
+      }
+    });
+
+    it('reuses the same client for repeated calls with the same endpoint', () => {
+      const endpoint = 'https://api-1.execute-api.ap-south-1.amazonaws.com/dev';
+      const client1 = getManagementApiClient(endpoint);
+      const client2 = getManagementApiClient(endpoint);
+
+      expect(client1).toBe(client2);
+    });
+
+    it('does not share clients between different endpoints', () => {
+      const endpoint1 = 'https://api-1.execute-api.ap-south-1.amazonaws.com/dev';
+      const endpoint2 = 'https://api-2.execute-api.ap-south-1.amazonaws.com/dev';
+      const client1 = getManagementApiClient(endpoint1);
+      const client2 = getManagementApiClient(endpoint2);
+
+      expect(client1).not.toBe(client2);
+    });
+
+    it('falls back to API_GATEWAY_MANAGEMENT_ENDPOINT when no endpoint argument is supplied', () => {
+      process.env.API_GATEWAY_MANAGEMENT_ENDPOINT =
+        'https://env-api.execute-api.ap-south-1.amazonaws.com/dev';
+
+      const client1 = getManagementApiClient();
+      const client2 = getManagementApiClient();
+
+      expect(client1).toBe(client2);
+    });
+
+    it('overrides the cached client when setManagementApiClient() is called', () => {
+      const customMockClient = {
+        send: vi.fn(),
+      } as unknown as import('@aws-sdk/client-apigatewaymanagementapi').ApiGatewayManagementApiClient;
+
+      setManagementApiClient(customMockClient);
+
+      expect(getManagementApiClient('https://any-endpoint.com')).toBe(customMockClient);
+      expect(getManagementApiClient()).toBe(customMockClient);
+    });
+
+    it('restores normal client creation and caching when the injected client is reset', () => {
+      const customMockClient = {
+        send: vi.fn(),
+      } as unknown as import('@aws-sdk/client-apigatewaymanagementapi').ApiGatewayManagementApiClient;
+
+      setManagementApiClient(customMockClient);
+      expect(getManagementApiClient()).toBe(customMockClient);
+
+      setManagementApiClient(undefined);
+
+      const normalClient1 = getManagementApiClient('https://normal-endpoint.com');
+      const normalClient2 = getManagementApiClient('https://normal-endpoint.com');
+
+      expect(normalClient1).not.toBe(customMockClient);
+      expect(normalClient1).toBe(normalClient2);
     });
   });
 });
