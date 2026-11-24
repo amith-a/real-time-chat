@@ -122,9 +122,16 @@ export function messageKey(roomId: string, sequence: number): PrimaryKey {
 }
 
 /** Inclusive sort-key bounds for "messages after sequence N" (N >= 0). */
-export function messagesAfterRange(afterSequence: number): { start: string; end: string } {
-  if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) {
-    throw new RangeError('afterSequence must be an integer >= 0');
+export function messagesAfterRange(afterSequence: number): {
+  start: string;
+  end: string;
+} {
+  if (
+    !Number.isSafeInteger(afterSequence) ||
+    afterSequence < 0 ||
+    afterSequence >= Number.MAX_SAFE_INTEGER
+  ) {
+    throw new RangeError('afterSequence must be a valid sequence');
   }
   return {
     start: `${MESSAGE_PREFIX}${padSequence(afterSequence + 1)}`,

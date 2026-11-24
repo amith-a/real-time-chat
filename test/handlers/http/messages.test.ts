@@ -280,6 +280,44 @@ describe('Messages HTTP Handler', () => {
       expect(JSON.parse(res.body).message).toContain('missing required DynamoDB key attributes');
     });
 
+    it('returns 400 when cursor belongs to a different room', async () => {
+      vi.spyOn(repositories, 'isMember').mockResolvedValue(true);
+      const foreignCursor = Buffer.from(
+        JSON.stringify({ PK: 'ROOM#other-room-999', SK: 'MSG#0000000050' }),
+      ).toString('base64');
+      const event = createHttpEvent({ queryStringParameters: { cursor: foreignCursor } });
+      const res = (await messagesHandler(event, mockContext, mockCallback)) as HttpResponse;
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).message).toContain(
+        'cursor does not belong to the requested room',
+      );
+    });
+
+    it('returns 400 when cursor points to META instead of a message record', async () => {
+      vi.spyOn(repositories, 'isMember').mockResolvedValue(true);
+      const metaCursor = Buffer.from(
+        JSON.stringify({ PK: 'ROOM#test-room-123', SK: 'META' }),
+      ).toString('base64');
+      const event = createHttpEvent({ queryStringParameters: { cursor: metaCursor } });
+      const res = (await messagesHandler(event, mockContext, mockCallback)) as HttpResponse;
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).message).toContain('cursor does not point to a message record');
+    });
+
+    it('returns 400 when cursor points to MEMBER# item instead of a message record', async () => {
+      vi.spyOn(repositories, 'isMember').mockResolvedValue(true);
+      const memberCursor = Buffer.from(
+        JSON.stringify({ PK: 'ROOM#test-room-123', SK: 'MEMBER#user-alice' }),
+      ).toString('base64');
+      const event = createHttpEvent({ queryStringParameters: { cursor: memberCursor } });
+      const res = (await messagesHandler(event, mockContext, mockCallback)) as HttpResponse;
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).message).toContain('cursor does not point to a message record');
+    });
+
     it('passes decoded cursor to repository when valid', async () => {
       vi.spyOn(repositories, 'isMember').mockResolvedValue(true);
       const startKey = { PK: 'ROOM#test-room-123', SK: 'MSG#0000000050' };

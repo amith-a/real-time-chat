@@ -1,8 +1,11 @@
+import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   createDirectRoom,
   createMessage,
+  getDocClient,
   getRoomSequence,
+  getTableName,
   listLatestMessages,
   listMessagesAfter,
 } from '../../src/repositories';
@@ -120,5 +123,55 @@ describe('messages (DynamoDB Local)', () => {
     expect(page1.nextKey).toBeDefined();
     const page2 = await listLatestMessages(roomId, { limit: 2, startKey: page1.nextKey });
     expect(page2.items.map((m) => m.sequenceNumber)).toEqual([3, 2]);
+  });
+
+  it('strictly excludes META, COUNTER, and MEMBER# records even when present in the same partition', async () => {
+    const roomId = await newRoom('u-ex-1', 'u-ex-2');
+
+    // Add co-located member records in the same room partition
+    await getDocClient().send(
+      new PutCommand({
+        TableName: getTableName(),
+        Item: {
+          PK: `ROOM#${roomId}`,
+          SK: 'MEMBER#u-ex-1',
+          userId: 'u-ex-1',
+          role: 'ADMIN',
+        },
+      }),
+    );
+    await getDocClient().send(
+      new PutCommand({
+        TableName: getTableName(),
+        Item: {
+          PK: `ROOM#${roomId}`,
+          SK: 'MEMBER#u-ex-2',
+          userId: 'u-ex-2',
+          role: 'MEMBER',
+        },
+      }),
+    );
+
+    // Write messages
+    await createMessage({ roomId, senderId: 'u-ex-1', clientMessageId: 'ex-1', content: 'hello' });
+    await createMessage({ roomId, senderId: 'u-ex-2', clientMessageId: 'ex-2', content: 'world' });
+
+    // 1. listLatestMessages query must only return MSG# items
+    const latest = await listLatestMessages(roomId);
+    expect(latest.items).toHaveLength(2);
+    expect(latest.items.map((m) => m.content)).toEqual(['world', 'hello']);
+    for (const item of latest.items) {
+      expect(item.SK.startsWith('MSG#')).toBe(true);
+      expect((item as unknown as { role?: string }).role).toBeUndefined();
+    }
+
+    // 2. listMessagesAfter query must only return MSG# items
+    const after = await listMessagesAfter(roomId, 0);
+    expect(after.items).toHaveLength(2);
+    expect(after.items.map((m) => m.content)).toEqual(['hello', 'world']);
+    for (const item of after.items) {
+      expect(item.SK.startsWith('MSG#')).toBe(true);
+      expect((item as unknown as { role?: string }).role).toBeUndefined();
+    }
   });
 });

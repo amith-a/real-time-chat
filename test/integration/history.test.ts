@@ -1,7 +1,13 @@
+import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2, Context } from 'aws-lambda';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { handler as messagesHandler } from '../../src/handlers/http/messages';
-import { createDirectRoom, createMessage } from '../../src/repositories';
+import {
+  createDirectRoom,
+  createMessage,
+  getDocClient,
+  getTableName,
+} from '../../src/repositories';
 import type { HttpResponse } from '../../src/shared';
 import { createTestTable, now, safeTeardown } from './helpers';
 
@@ -152,6 +158,76 @@ describe('History API Integration (DynamoDB Local)', () => {
     }
   });
 
+  it('strictly excludes MEMBER# items from history when present in the room partition', async () => {
+    // Explicitly write MEMBER# items into the room partition (e.g. group room co-located memberships)
+    await getDocClient().send(
+      new PutCommand({
+        TableName: getTableName(),
+        Item: {
+          PK: `ROOM#${roomId}`,
+          SK: `MEMBER#${userAlice}`,
+          userId: userAlice,
+          roomId,
+          role: 'ADMIN',
+          joinedAt: now(),
+        },
+      }),
+    );
+    await getDocClient().send(
+      new PutCommand({
+        TableName: getTableName(),
+        Item: {
+          PK: `ROOM#${roomId}`,
+          SK: `MEMBER#${userBob}`,
+          userId: userBob,
+          roomId,
+          role: 'MEMBER',
+          joinedAt: now(),
+        },
+      }),
+    );
+
+    // 1. Browsing mode: verify MEMBER# records are completely excluded
+    const event = createHttpEvent({
+      userId: userAlice,
+      roomId,
+    });
+    const res = (await messagesHandler(event, mockContext, mockCallback)) as HttpResponse;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+
+    // Exactly the 5 messages, no MEMBER# items returned
+    expect(body.items).toHaveLength(5);
+    for (const item of body.items) {
+      expect(item.sequenceNumber).toBeDefined();
+      expect(item.content).toBeDefined();
+      expect(item.role).toBeUndefined();
+    }
+
+    // 2. Recovery mode (?after=2): verify MEMBER# records are completely excluded
+    const recoveryEvent = createHttpEvent({
+      userId: userAlice,
+      roomId,
+      queryStringParameters: { after: '2' },
+    });
+    const recoveryRes = (await messagesHandler(
+      recoveryEvent,
+      mockContext,
+      mockCallback,
+    )) as HttpResponse;
+
+    expect(recoveryRes.statusCode).toBe(200);
+    const recoveryBody = JSON.parse(recoveryRes.body);
+
+    expect(recoveryBody.items.map((m: { sequenceNumber: number }) => m.sequenceNumber)).toEqual([
+      3, 4, 5,
+    ]);
+    for (const item of recoveryBody.items) {
+      expect(item.role).toBeUndefined();
+    }
+  });
+
   it('paginates forward through history with cursors', async () => {
     // Page 1: limit 2
     const page1Event = createHttpEvent({
@@ -244,5 +320,39 @@ describe('History API Integration (DynamoDB Local)', () => {
     expect(body.items.map((m: { sequenceNumber: number }) => m.sequenceNumber)).toEqual([
       1, 2, 3, 4, 5,
     ]);
+  });
+
+  it('rejects cursors from a different room with 400 Bad Request', async () => {
+    const foreignCursor = Buffer.from(
+      JSON.stringify({ PK: 'ROOM#other-unrelated-room', SK: 'MSG#0000000002' }),
+    ).toString('base64');
+    const event = createHttpEvent({
+      userId: userAlice,
+      roomId,
+      queryStringParameters: { cursor: foreignCursor },
+    });
+    const res = (await messagesHandler(event, mockContext, mockCallback)) as HttpResponse;
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).message).toBe(
+      'Invalid pagination cursor: cursor does not belong to the requested room',
+    );
+  });
+
+  it('rejects cursors pointing to non-message records (e.g. META or MEMBER#) with 400 Bad Request', async () => {
+    const metaCursor = Buffer.from(JSON.stringify({ PK: `ROOM#${roomId}`, SK: 'META' })).toString(
+      'base64',
+    );
+    const event = createHttpEvent({
+      userId: userAlice,
+      roomId,
+      queryStringParameters: { cursor: metaCursor },
+    });
+    const res = (await messagesHandler(event, mockContext, mockCallback)) as HttpResponse;
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).message).toBe(
+      'Invalid pagination cursor: cursor does not point to a message record',
+    );
   });
 });

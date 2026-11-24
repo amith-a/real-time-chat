@@ -42,7 +42,10 @@ export function toMessageDto(item: MessageItem): MessageDto {
   };
 }
 
-export function decodeCursor(cursor?: string): Record<string, unknown> | undefined {
+export function decodeCursor(
+  cursor?: string,
+  roomId?: string,
+): Record<string, unknown> | undefined {
   if (cursor === undefined || cursor === '') return undefined;
 
   const trimmed = cursor.trim();
@@ -86,6 +89,20 @@ export function decodeCursor(cursor?: string): Record<string, unknown> | undefin
   if (!key.PK || !key.SK) {
     throw new BadRequestError(
       'Invalid pagination cursor: missing required DynamoDB key attributes (PK, SK)',
+    );
+  }
+
+  // Validate cursor matches the requested room
+  if (roomId !== undefined && key.PK !== `ROOM#${roomId}`) {
+    throw new BadRequestError(
+      'Invalid pagination cursor: cursor does not belong to the requested room',
+    );
+  }
+
+  // Validate cursor points to a message record (not META or MEMBER#)
+  if (typeof key.SK === 'string' && !key.SK.startsWith('MSG#')) {
+    throw new BadRequestError(
+      'Invalid pagination cursor: cursor does not point to a message record',
     );
   }
 
@@ -156,7 +173,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       afterSequence = parsedAfter;
     }
 
-    const startKey = decodeCursor(event.queryStringParameters?.cursor);
+    const startKey = decodeCursor(event.queryStringParameters?.cursor, roomId);
 
     // Query messages: recovery mode (?after=N) vs browsing mode (latest first)
     const page =
