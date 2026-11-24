@@ -1,0 +1,45 @@
+meta {
+  name: Login (USER_PASSWORD_AUTH)
+  type: http
+  seq: 1
+}
+
+post {
+  url: https://cognito-idp.{{region}}.amazonaws.com/
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth
+}
+
+body:json {
+  {
+    "AuthFlow": "USER_PASSWORD_AUTH",
+    "ClientId": "{{clientId}}",
+    "AuthParameters": {
+      "USERNAME": "{{username}}",
+      "PASSWORD": "{{password}}"
+    }
+  }
+}
+
+script:post-response {
+  if (res.status === 200 && res.body.AuthenticationResult) {
+    const { IdToken, AccessToken, RefreshToken, ExpiresIn } = res.body.AuthenticationResult;
+    
+    bru.setEnvVar('idToken', IdToken);
+    bru.setEnvVar('accessToken', AccessToken);
+    if (RefreshToken) {
+      bru.setEnvVar('refreshToken', RefreshToken);
+    }
+    
+    // Save expiration timestamp (with a 60 second safety buffer)
+    const expiresAt = Date.now() + (ExpiresIn - 60) * 1000;
+    bru.setEnvVar('tokenExpiresAt', expiresAt);
+    
+    console.log('[Bruno Auth] Login successful. idToken & refreshToken saved in environment.');
+  }
+}

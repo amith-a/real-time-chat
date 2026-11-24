@@ -1,0 +1,16 @@
+meta {
+  name: List Users
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/users?query=ali&limit=20
+  body: none
+  auth: inherit
+}
+
+params:query {
+  query: ali
+  limit: 20
+}

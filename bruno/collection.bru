@@ -1,0 +1,54 @@
+headers {
+  Authorization: Bearer {{idToken}}
+}
+
+script:pre-request {
+  const axios = require('axios');
+
+  const tokenExpiresAt = bru.getEnvVar('tokenExpiresAt');
+  const refreshToken = bru.getEnvVar('refreshToken');
+  const clientId = bru.getEnvVar('clientId');
+  const region = bru.getEnvVar('region') || 'ap-south-1';
+
+  // Do not intercept auth calls themselves
+  const reqUrl = req.getUrl() || '';
+  if (reqUrl.includes('cognito-idp')) {
+    return;
+  }
+
+  // Check if token is expired or expires within 60 seconds
+  const isExpired = !tokenExpiresAt || Date.now() >= Number(tokenExpiresAt);
+
+  if (isExpired && refreshToken && clientId) {
+    try {
+      const response = await axios.post(
+        `https://cognito-idp.${region}.amazonaws.com/`,
+        {
+          AuthFlow: 'REFRESH_TOKEN_AUTH',
+          ClientId: clientId,
+          AuthParameters: {
+            REFRESH_TOKEN: refreshToken,
+          },
+        },
+        {
+          headers: {
+            'Content-Type': 'application/x-amz-json-1.1',
+            'X-Amz-Target': 'AWSCognitoIdentityProviderService.InitiateAuth',
+          },
+        }
+      );
+
+      if (response.data && response.data.AuthenticationResult) {
+        const { IdToken, AccessToken, ExpiresIn } = response.data.AuthenticationResult;
+        bru.setEnvVar('idToken', IdToken);
+        bru.setEnvVar('accessToken', AccessToken);
+        
+        const newExpiry = Date.now() + (ExpiresIn - 60) * 1000;
+        bru.setEnvVar('tokenExpiresAt', newExpiry);
+        console.log('[Bruno Auto-Auth] ID Token successfully refreshed!');
+      }
+    } catch (err) {
+      console.error('[Bruno Auto-Auth] Error refreshing token:', err.message);
+    }
+  }
+}

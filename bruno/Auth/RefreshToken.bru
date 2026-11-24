@@ -1,0 +1,40 @@
+meta {
+  name: Refresh Token (REFRESH_TOKEN_AUTH)
+  type: http
+  seq: 2
+}
+
+post {
+  url: https://cognito-idp.{{region}}.amazonaws.com/
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth
+}
+
+body:json {
+  {
+    "AuthFlow": "REFRESH_TOKEN_AUTH",
+    "ClientId": "{{clientId}}",
+    "AuthParameters": {
+      "REFRESH_TOKEN": "{{refreshToken}}"
+    }
+  }
+}
+
+script:post-response {
+  if (res.status === 200 && res.body.AuthenticationResult) {
+    const { IdToken, AccessToken, ExpiresIn } = res.body.AuthenticationResult;
+    
+    bru.setEnvVar('idToken', IdToken);
+    bru.setEnvVar('accessToken', AccessToken);
+    
+    const expiresAt = Date.now() + (ExpiresIn - 60) * 1000;
+    bru.setEnvVar('tokenExpiresAt', expiresAt);
+    
+    console.log('[Bruno Auth] Token refreshed successfully.');
+  }
+}
