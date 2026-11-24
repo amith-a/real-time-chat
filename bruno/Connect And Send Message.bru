@@ -1,0 +1,19 @@
+meta {
+  name: Connect and Send Message
+  type: ws
+  seq: 5
+}
+
+ws {
+  url: {{webSocket}}?token={{idToken}}
+  body: ws
+  auth: inherit
+}
+
+body:ws {
+  name: message 1
+  type: json
+  content: '''
+    {}
+  '''
+}

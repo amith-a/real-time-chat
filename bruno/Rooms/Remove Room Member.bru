@@ -1,0 +1,11 @@
+meta {
+  name: Remove Room Member
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/rooms/{{roomId}}/members/{{targetUserId}}
+  body: none
+  auth: inherit
+}

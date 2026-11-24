@@ -1,0 +1,16 @@
+meta {
+  name: List User Rooms
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/rooms?limit=50
+  body: none
+  auth: inherit
+}
+
+params:query {
+  limit: 50
+  ~cursor: 
+}

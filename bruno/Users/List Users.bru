@@ -5,12 +5,12 @@ meta {
 }
 
 get {
-  url: {{baseUrl}}/users?query=ali&limit=20
+  url: {{baseUrl}}/users?limit=20
   body: none
   auth: inherit
 }
 
 params:query {
-  query: ali
   limit: 20
+  ~query: ali
 }

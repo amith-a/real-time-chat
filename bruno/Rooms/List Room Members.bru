@@ -1,0 +1,11 @@
+meta {
+  name: List Room Members
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/rooms/{{roomId}}/members
+  body: none
+  auth: inherit
+}
