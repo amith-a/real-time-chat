@@ -27,6 +27,35 @@ aws cloudformation describe-stacks \
 
 ---
 
+## 1.1 GitHub Actions OIDC Setup (CI/CD Deployment Role)
+
+To deploy from GitHub Actions without storing long-lived `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` secrets, deploy the OIDC stack once:
+
+```bash
+aws cloudformation deploy \
+  --template-file infra/github-oidc.yaml \
+  --stack-name realtime-chat-github-oidc \
+  --parameter-overrides \
+    GitHubOrg="amith-a" \
+    GitHubRepo="real-time-chat" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region ap-south-1
+```
+
+Retrieve the created deployment Role ARN:
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name realtime-chat-github-oidc \
+  --region ap-south-1 \
+  --query "Stacks[0].Outputs[?OutputKey=='RoleArn'].OutputValue" \
+  --output text
+```
+
+Set this ARN in your GitHub repository secrets as `AWS_DEPLOY_ROLE_ARN` (or variable). In GitHub Actions, use `aws-actions/configure-aws-credentials@v4` with `role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}`.
+
+---
+
 ## 2. Automated Full Deployment
 
 The deployment script builds the Lambda functions, packages each handler with content-based SHA-256 hashes, uploads the ZIP archives to S3, and deploys the CloudFormation stack:

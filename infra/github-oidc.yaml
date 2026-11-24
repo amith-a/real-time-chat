@@ -1,0 +1,318 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: GitHub Actions OIDC provider and deployment role for Real-Time Chat
+
+# Deploy this stack by hand, once, from your own credentials:
+#   aws cloudformation deploy --template-file infra/github-oidc.yaml \
+#     --stack-name github-oidc-realtime --capabilities CAPABILITY_NAMED_IAM
+#
+# Keep the stack name and the role name OUTSIDE the patterns this role may manage
+# (realtime-chat-* and *-chat-*). Otherwise the role could rewrite its own permissions.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - I4010
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: amith-a
+    Description: GitHub organization or username that owns the repository
+
+  GitHubRepo:
+    Type: String
+    Default: real-time-chat
+    Description: GitHub repository name
+
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: Only workflows running on this branch may assume the role
+
+  RoleName:
+    Type: String
+    Default: github-actions-realtime-deployer
+    Description: Must NOT match realtime-chat-* or *-chat-* (see note at the top of the file)
+
+  CreateOIDCProvider:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >
+      Set to "false" if the account already has an OIDC provider for
+      https://token.actions.githubusercontent.com (only one is allowed per account).
+
+  ExistingOIDCProviderArn:
+    Type: String
+    Default: ""
+    Description: ARN of the existing GitHub OIDC provider. Used only when CreateOIDCProvider is "false".
+
+Conditions:
+  ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, "true"]
+  HasExistingProviderArn: !Not [!Equals [!Ref ExistingOIDCProviderArn, ""]]
+
+Resources:
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOIDCProvider
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # AWS no longer validates thumbprints for GitHub, but the property is kept for compatibility.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c587610401752a07a294037463f51e721925421
+
+  GitHubActionsDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: Assumed by GitHub Actions via OIDC to deploy the Real-Time Chat stacks
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateOIDCProvider
+                - !GetAtt GitHubOIDCProvider.Arn
+                - !If
+                  - HasExistingProviderArn
+                  - !Ref ExistingOIDCProviderArn
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # Exact match: only this repository, only this branch.
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:ref:refs/heads/${GitHubBranch}"
+      Policies:
+        - PolicyName: RealTimeChatDeploymentPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # 1a. CloudFormation: project stacks only
+              - Sid: CloudFormationProjectStacks
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:ListStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/realtime-chat-*/*"
+
+              # 1b. These two actions do not support resource-level scoping
+              - Sid: CloudFormationTemplateChecks
+                Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:GetTemplateSummary
+                Resource: "*"
+
+              # 2. S3: artifact bucket(s) only
+              - Sid: ArtifactBuckets
+                Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:GetBucketLocation
+                  - s3:PutBucketPolicy
+                  - s3:GetBucketPolicy
+                  - s3:DeleteBucketPolicy
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:PutBucketVersioning
+                  - s3:GetBucketVersioning
+                  - s3:PutEncryptionConfiguration
+                  - s3:GetEncryptionConfiguration
+                  - s3:PutLifecycleConfiguration
+                  - s3:GetLifecycleConfiguration
+                  - s3:PutBucketTagging
+                  - s3:GetBucketTagging
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::realtime-chat-*"
+                  - !Sub "arn:${AWS::Partition}:s3:::realtime-chat-*/*"
+
+              # 3. Lambda
+              - Sid: LambdaFunctions
+                Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:DeleteFunction
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:GetPolicy
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                  - lambda:ListTags
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:lambda:*:${AWS::AccountId}:function:realtime-chat-*"
+                  - !Sub "arn:${AWS::Partition}:lambda:*:${AWS::AccountId}:function:*-chat-*"
+
+              # 4. API Gateway v2 (WebSocket API)
+              - Sid: WebSocketApi
+                Effect: Allow
+                Action:
+                  - apigateway:GET
+                  - apigateway:POST
+                  - apigateway:PUT
+                  - apigateway:PATCH
+                  - apigateway:DELETE
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:apigateway:*::/apis"
+                  - !Sub "arn:${AWS::Partition}:apigateway:*::/apis/*"
+                  - !Sub "arn:${AWS::Partition}:apigateway:*::/tags/*"
+
+              # 5. DynamoDB table management (not data access)
+              - Sid: DynamoDbTables
+                Effect: Allow
+                Action:
+                  - dynamodb:CreateTable
+                  - dynamodb:UpdateTable
+                  - dynamodb:DeleteTable
+                  - dynamodb:DescribeTable
+                  - dynamodb:DescribeContinuousBackups
+                  - dynamodb:UpdateTimeToLive
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:TagResource
+                  - dynamodb:UntagResource
+                  - dynamodb:ListTagsOfResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/realtime-chat-*"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/realtime-chat-*/index/*"
+
+              # 6a. Cognito: CreateUserPool cannot be scoped to a resource
+              - Sid: CognitoCreateUserPool
+                Effect: Allow
+                Action:
+                  - cognito-idp:CreateUserPool
+                Resource: "*"
+
+              # 6b. Cognito: everything else on this account's pools
+              - Sid: CognitoUserPools
+                Effect: Allow
+                Action:
+                  - cognito-idp:UpdateUserPool
+                  - cognito-idp:DeleteUserPool
+                  - cognito-idp:DescribeUserPool
+                  - cognito-idp:CreateUserPoolClient
+                  - cognito-idp:UpdateUserPoolClient
+                  - cognito-idp:DeleteUserPoolClient
+                  - cognito-idp:DescribeUserPoolClient
+                  - cognito-idp:SetUserPoolMfaConfig
+                  - cognito-idp:GetUserPoolMfaConfig
+                  - cognito-idp:TagResource
+                  - cognito-idp:UntagResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cognito-idp:*:${AWS::AccountId}:userpool/*"
+
+              # 7a. CloudWatch Logs: Lambda log groups for this project
+              - Sid: LambdaLogGroups
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DeleteRetentionPolicy
+                  - logs:TagLogGroup
+                  - logs:TagResource
+                  - logs:UntagResource
+                  - logs:ListTagsForResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/lambda/*chat*"
+                  - !Sub "arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/lambda/*chat*:*"
+
+              # 7b. DescribeLogGroups is evaluated against the log-group wildcard
+              - Sid: LogGroupDescribe
+                Effect: Allow
+                Action:
+                  - logs:DescribeLogGroups
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*"
+
+              # 8a. IAM: manage the project's roles and policies
+              - Sid: IamProjectRolesAndPolicies
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:CreatePolicy
+                  - iam:DeletePolicy
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  - iam:ListPolicyVersions
+                  - iam:CreatePolicyVersion
+                  - iam:DeletePolicyVersion
+                  - iam:TagPolicy
+                  - iam:UntagPolicy
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*-chat-*"
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/realtime-chat-*"
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/*-chat-*"
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/realtime-chat-*"
+
+              # 8b. PassRole: these roles may only be handed to Lambda
+              - Sid: PassRoleToLambdaOnly
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*-chat-*"
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/realtime-chat-*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: lambda.amazonaws.com
+
+Outputs:
+  RoleArn:
+    Description: ARN of the GitHub Actions deployment role (use as role-to-assume in the workflow)
+    Value: !GetAtt GitHubActionsDeployRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-RoleArn"
+
+  OIDCProviderArn:
+    Description: ARN of the GitHub OIDC identity provider
+    Value: !If
+      - ShouldCreateOIDCProvider
+      - !GetAtt GitHubOIDCProvider.Arn
+      - !If
+        - HasExistingProviderArn
+        - !Ref ExistingOIDCProviderArn
+        - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
