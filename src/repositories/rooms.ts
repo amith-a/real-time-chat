@@ -93,12 +93,18 @@ export async function listRoomsForUserPage(
 }
 
 /** AP7: members of a room, via GSI1. Eventually consistent: a just-added member may be missing. */
-export async function listRoomMembers(roomId: string): Promise<MembershipItem[]> {
-  return queryAll<MembershipItem>({
-    IndexName: GSI1_NAME,
-    KeyConditionExpression: 'GSI1PK = :pk AND begins_with(GSI1SK, :prefix)',
-    ExpressionAttributeValues: { ':pk': roomPartitionKey(roomId), ':prefix': MEMBER_PREFIX },
-  });
+export async function listRoomMembers(
+  roomId: string,
+  maxPages?: number,
+): Promise<MembershipItem[]> {
+  return queryAll<MembershipItem>(
+    {
+      IndexName: GSI1_NAME,
+      KeyConditionExpression: 'GSI1PK = :pk AND begins_with(GSI1SK, :prefix)',
+      ExpressionAttributeValues: { ':pk': roomPartitionKey(roomId), ':prefix': MEMBER_PREFIX },
+    },
+    maxPages,
+  );
 }
 
 /** AP7 (paginated): members of a room via GSI1, one page at a time. */

@@ -10,6 +10,8 @@ import {
 } from '../../repositories';
 import {
   BadRequestError,
+  DEFAULT_DYNAMODB_CONCURRENCY,
+  DEFAULT_GATEWAY_CONCURRENCY,
   ForbiddenError,
   formatResponse,
   getAuthenticatedUser,
@@ -19,6 +21,8 @@ import {
   type MessageAckPayload,
   type MessageDeliveryPayload,
   parseJsonBody,
+  pMap,
+  pMapSettled,
   postToConnection,
   type SendMessageInput,
   sendMessageSchema,
@@ -64,6 +68,12 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
       }
     };
 
+    const startTime = Date.now();
+    let membershipLookupDurationMs = 0;
+    let connectionResolutionDurationMs = 0;
+    let messagePersistDurationMs = 0;
+    let deliveryDurationMs = 0;
+
     if (recipientUserId) {
       if (recipientUserId === senderId) {
         throw new BadRequestError('Cannot send a direct message to yourself');
@@ -78,10 +88,12 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
       await createDirectRoom({ userA: senderId, userB: recipientUserId });
 
       // Gather recipient connections and sender's other connections concurrently
+      const resolutionStart = Date.now();
       const [recipientConnections, senderConnections] = await Promise.all([
         listUserConnections(recipientUserId),
         listUserConnections(senderId),
       ]);
+      connectionResolutionDurationMs = Date.now() - resolutionStart;
 
       for (const conn of recipientConnections) {
         addDestination(conn.connectionId, recipientUserId);
@@ -92,17 +104,23 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
     } else if (rawRoomId) {
       targetRoomId = rawRoomId;
 
+      const memberLookupStart = Date.now();
       const isUserMember = await isMember(senderId, targetRoomId);
       if (!isUserMember) {
         throw new ForbiddenError('You are not a member of this room');
       }
 
       const members = await listRoomMembers(targetRoomId);
+      membershipLookupDurationMs = Date.now() - memberLookupStart;
 
-      // Concurrently query connections for all room members
-      const memberConnectionLists = await Promise.all(
-        members.map((member) => listUserConnections(member.userId)),
+      // Query connections for all room members with bounded DynamoDB concurrency
+      const resolutionStart = Date.now();
+      const memberConnectionLists = await pMap(
+        members,
+        (member) => listUserConnections(member.userId),
+        DEFAULT_DYNAMODB_CONCURRENCY,
       );
+      connectionResolutionDurationMs = Date.now() - resolutionStart;
 
       for (let i = 0; i < members.length; i++) {
         const member = members[i];
@@ -116,6 +134,7 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
     }
 
     // Persist message and allocate sequence number idempotently
+    const persistStart = Date.now();
     const result = await createMessage({
       roomId: targetRoomId,
       senderId,
@@ -123,6 +142,7 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
       content: body,
       messageType,
     });
+    messagePersistDurationMs = Date.now() - persistStart;
 
     const endpoint =
       process.env.API_GATEWAY_MANAGEMENT_ENDPOINT || `https://${domainName}/${stage}`;
@@ -134,6 +154,7 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
 
     // If not a duplicate replay, fan out message to all destinations
     if (!result.duplicate && destinations.length > 0) {
+      const deliveryStart = Date.now();
       const deliveryPayload: MessageDeliveryPayload = {
         action: 'message',
         roomId: targetRoomId,
@@ -145,16 +166,18 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
         createdAt: result.createdAt,
       };
 
-      const deliveryResults = await Promise.allSettled(
-        destinations.map((dest) =>
+      const deliveryResults = await pMapSettled(
+        destinations,
+        (dest) =>
           postToConnection({
             connectionId: dest.connectionId,
             userId: dest.userId,
             payload: deliveryPayload,
             endpoint,
           }),
-        ),
+        DEFAULT_GATEWAY_CONCURRENCY,
       );
+      deliveryDurationMs = Date.now() - deliveryStart;
 
       for (let i = 0; i < deliveryResults.length; i++) {
         const deliveryResult = deliveryResults[i];
@@ -184,6 +207,8 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
       }
     }
 
+    const totalDurationMs = Date.now() - startTime;
+
     const ackPayload: MessageAckPayload = {
       action: 'ack',
       messageId,
@@ -203,6 +228,13 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
       failedCount,
       staleCount,
       errorCount,
+      metrics: {
+        membershipLookupDurationMs,
+        connectionResolutionDurationMs,
+        messagePersistDurationMs,
+        deliveryDurationMs,
+        totalDurationMs,
+      },
     });
 
     return formatResponse(200, ackPayload);

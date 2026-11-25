@@ -11,7 +11,8 @@
     "lint:fix": "biome check --write .",
     "lint:cfn": "docker compose run --rm cfn-lint",
     "format": "biome format --write .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "benchmark:fanout": "tsx scripts/benchmark/fanout-benchmark.ts"
   },
   "devDependencies": {
     "@aws-sdk/client-apigatewaymanagementapi": "^3.1176.0",

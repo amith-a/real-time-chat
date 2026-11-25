@@ -1,4 +1,5 @@
 export * from './auth';
+export * from './concurrency';
 export * from './error-handler';
 export * from './errors';
 export * from './logger';

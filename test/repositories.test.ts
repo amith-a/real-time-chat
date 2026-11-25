@@ -10,6 +10,8 @@ import {
   getUserProfile,
   hashMembership,
   hashRequest,
+  listRoomMembers,
+  listUserConnections,
   listUserConnectionsPage,
   listUsers,
   putUserProfile,
@@ -299,6 +301,26 @@ describe('DynamoDB Repository Layer', () => {
       const page = await listUserConnectionsPage('u1', { limit: 2 });
       expect(page.items).toHaveLength(2);
       expect(page.nextKey).toEqual({ PK: 'USER#u1', SK: 'CONNECTION#c2' });
+    });
+
+    it('traverses multiple DynamoDB pages and returns all connections across pages via listUserConnections', async () => {
+      // Page 1
+      mockSend.mockResolvedValueOnce({
+        Items: [
+          { userId: 'u1', connectionId: 'c1' },
+          { userId: 'u1', connectionId: 'c2' },
+        ],
+        LastEvaluatedKey: { PK: 'USER#u1', SK: 'CONNECTION#c2' },
+      });
+      // Page 2
+      mockSend.mockResolvedValueOnce({
+        Items: [{ userId: 'u1', connectionId: 'c3' }],
+      });
+
+      const connections = await listUserConnections('u1');
+      expect(connections).toHaveLength(3);
+      expect(connections.map((c) => c.connectionId)).toEqual(['c1', 'c2', 'c3']);
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -840,6 +862,26 @@ describe('DynamoDB Repository Layer', () => {
           members,
         }),
       ).rejects.toThrow(BadRequestError);
+    });
+
+    it('traverses multiple DynamoDB pages and returns all members across pages via listRoomMembers', async () => {
+      // Page 1
+      mockSend.mockResolvedValueOnce({
+        Items: [
+          { roomId: 'r1', userId: 'user-1', role: 'ADMIN' },
+          { roomId: 'r1', userId: 'user-2', role: 'MEMBER' },
+        ],
+        LastEvaluatedKey: { GSI1PK: 'ROOM#r1', GSI1SK: 'MEMBER#user-2' },
+      });
+      // Page 2
+      mockSend.mockResolvedValueOnce({
+        Items: [{ roomId: 'r1', userId: 'user-3', role: 'MEMBER' }],
+      });
+
+      const members = await listRoomMembers('r1');
+      expect(members).toHaveLength(3);
+      expect(members.map((m) => m.userId)).toEqual(['user-1', 'user-2', 'user-3']);
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
   });
 

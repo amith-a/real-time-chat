@@ -3,6 +3,7 @@ import {
   PostToConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
 import { getConnectionOwner, removeConnection } from '../repositories';
+import { isThrottledError, withRetry } from './concurrency';
 import { logger } from './logger';
 
 let injectedClient: ApiGatewayManagementApiClient | undefined;
@@ -58,27 +59,46 @@ export interface PostToConnectionInput {
   userId?: string;
   autoPrune?: boolean;
   client?: ApiGatewayManagementApiClient;
+  maxRetries?: number;
 }
 
 /**
  * Sends a message payload to an active WebSocket connection.
  * If API Gateway returns 410 GoneException, the connection is considered dead
  * and is automatically pruned from DynamoDB to prevent future wasted calls.
+ * If API Gateway returns 429 TooManyRequestsException, it retries with exponential backoff.
  *
  * @returns true if delivered successfully, false if connection is gone (410).
  */
 export async function postToConnection(input: PostToConnectionInput): Promise<boolean> {
-  const { connectionId, payload, endpoint, userId, autoPrune = true, client: customClient } = input;
+  const {
+    connectionId,
+    payload,
+    endpoint,
+    userId,
+    autoPrune = true,
+    client: customClient,
+    maxRetries = 3,
+  } = input;
   const client = customClient || getManagementApiClient(endpoint);
   const data = typeof payload === 'string' ? payload : JSON.stringify(payload);
   const binaryData = new TextEncoder().encode(data);
 
   try {
-    await client.send(
-      new PostToConnectionCommand({
-        ConnectionId: connectionId,
-        Data: binaryData,
-      }),
+    await withRetry(
+      () =>
+        client.send(
+          new PostToConnectionCommand({
+            ConnectionId: connectionId,
+            Data: binaryData,
+          }),
+        ),
+      {
+        maxRetries,
+        initialDelayMs: 25,
+        maxDelayMs: 300,
+        isRetryable: isThrottledError,
+      },
     );
     return true;
   } catch (error: unknown) {
