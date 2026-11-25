@@ -99,6 +99,7 @@ async function main() {
         await cleanupBenchmarkRoom(
           roomId,
           users.map((u) => u.userId),
+          ownedUsernames.size > 0,
         );
       } catch (err) {
         teardownFailed = true;

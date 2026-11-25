@@ -4,7 +4,9 @@ import {
   getDocClient,
   getTableName,
   idempotencyKey,
+  presenceKey,
   roomPartitionKey,
+  userKey,
   userPartitionKey,
 } from '../../src/repositories';
 import { BENCHMARK_ROOM_PREFIX } from './config';
@@ -138,8 +140,14 @@ async function queryKeysByPk(pk: string): Promise<Array<{ PK: string; SK: string
 /**
  * Ownership-safe, reliable cleanup of benchmark room data.
  * Refuses to operate on any roomId that does not carry the benchmark-room- prefix.
+ * When `deleteEphemeralUsers` is true, also deletes PROFILE and PRESENCE items
+ * for the ephemeral benchmark users.
  */
-export async function cleanupBenchmarkRoom(roomId: string, userIds: string[]): Promise<void> {
+export async function cleanupBenchmarkRoom(
+  roomId: string,
+  userIds: string[],
+  deleteEphemeralUsers = false,
+): Promise<void> {
   if (!roomId.startsWith(BENCHMARK_ROOM_PREFIX)) {
     throw new Error(
       `Refusing cleanup: roomId '${roomId}' does not start with '${BENCHMARK_ROOM_PREFIX}'.`,
@@ -188,6 +196,13 @@ export async function cleanupBenchmarkRoom(roomId: string, userIds: string[]): P
     const idempPk = idempotencyKey(resolvedUserIds[0], roomId, 'probe').PK;
     const idempKeys = await queryKeysByPk(idempPk);
     keysToDelete.push(...idempKeys);
+  }
+
+  // Clean up PROFILE and PRESENCE items created by $connect for ephemeral benchmark users
+  if (deleteEphemeralUsers) {
+    for (const userId of resolvedUserIds) {
+      keysToDelete.push(userKey(userId), presenceKey(userId));
+    }
   }
 
   const deletedCount = await batchDeleteWithRetry(keysToDelete);
