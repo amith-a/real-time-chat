@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Real-Time Chat Application - Stateful Core Infrastructure (DynamoDB & Cognito)
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+    Description: Deployment environment (dev, prod)
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${Environment}-real-time-chat-users"
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireNumbers: true
+          RequireLowercase: true
+          RequireUppercase: true
+      MfaConfiguration: "OFF"
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub "${Environment}-chat-web-client"
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        - COGNITO
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+
+  ChatTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Environment}-chat-table"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+Outputs:
+  UserPoolId:
+    Description: ID of the Cognito User Pool
+    Value: !Ref UserPool
+    Export:
+      Name: !Sub "${Environment}-chat-user-pool-id"
+
+  UserPoolClientId:
+    Description: ID of the Cognito User Pool Client
+    Value: !Ref UserPoolClient
+    Export:
+      Name: !Sub "${Environment}-chat-user-pool-client-id"
+
+  UserPoolArn:
+    Description: ARN of the Cognito User Pool
+    Value: !GetAtt UserPool.Arn
+    Export:
+      Name: !Sub "${Environment}-chat-user-pool-arn"
+
+  UserPoolIssuer:
+    Description: Cognito User Pool Issuer URL
+    Value: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+    Export:
+      Name: !Sub "${Environment}-chat-user-pool-issuer"
+
+  ChatTableName:
+    Description: Name of the DynamoDB Chat Table
+    Value: !Ref ChatTable
+    Export:
+      Name: !Sub "${Environment}-chat-table-name"
+
+  ChatTableArn:
+    Description: ARN of the DynamoDB Chat Table
+    Value: !GetAtt ChatTable.Arn
+    Export:
+      Name: !Sub "${Environment}-chat-table-arn"
+
+  ChatTableIndexArn:
+    Description: ARN pattern for all indexes of the DynamoDB Chat Table
+    Value: !Sub "${ChatTable.Arn}/index/*"
+    Export:
+      Name: !Sub "${Environment}-chat-table-index-arn"

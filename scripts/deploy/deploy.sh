@@ -14,10 +14,12 @@ REGION=${AWS_REGION:-ap-south-1}
 
 # CloudFormation stack names
 ARTIFACT_STACK="realtime-chat-artifacts"
+CORE_STACK="realtime-chat-core-${ENV}"
 APP_STACK="realtime-chat-${ENV}"
 
 # Template paths
 ARTIFACT_TEMPLATE="infra/artifacts.yaml"
+CORE_TEMPLATE="infra/core.yaml"
 APP_TEMPLATE="infra/template.yaml"
 
 # 1. Deploy the shared artifact bucket stack
@@ -43,15 +45,26 @@ fi
 
 echo "Artifact bucket: $BUCKET"
 
-# 3. Type-check the application
+# 3. Deploy the core stateful stack (Cognito & DynamoDB)
+echo "Deploying core stateful stack..."
+
+aws cloudformation deploy \
+  --template-file "$CORE_TEMPLATE" \
+  --stack-name "$CORE_STACK" \
+  --parameter-overrides \
+    Environment="$ENV" \
+  --region "$REGION" \
+  --no-fail-on-empty-changeset
+
+# 4. Type-check the application
 echo "Running type-check..."
 npm run typecheck
 
-# 4. Build all Lambda bundles using esbuild config (esbuild.config.mjs)
+# 5. Build all Lambda bundles using esbuild config (esbuild.config.mjs)
 echo "Building Lambda functions..."
 npm run build
 
-# 5. Package and upload a Lambda bundle, returning its S3 artifact key.
+# 6. Package and upload a Lambda bundle, returning its S3 artifact key.
 # Logs go to stderr so command substitution captures only the artifact key.
 package_and_upload() {
   local HANDLER="$1"
@@ -119,7 +132,12 @@ USERS_ARTIFACT_KEY=$(package_and_upload users)
 MESSAGES_ARTIFACT_KEY=$(package_and_upload messages)
 ROOMS_ARTIFACT_KEY=$(package_and_upload rooms)
 
-# 6. Deploy the application stack
+# 7. Upload nested CloudFormation templates to S3
+echo "Uploading nested stack templates..."
+aws s3 cp infra/websocket.yaml "s3://${BUCKET}/templates/websocket.yaml" --region "$REGION" --sse AES256
+aws s3 cp infra/http.yaml "s3://${BUCKET}/templates/http.yaml" --region "$REGION" --sse AES256
+
+# 8. Deploy the root application stack (which deploys nested WebSocket & HTTP stacks)
 echo "Deploying application stack..."
 
 aws cloudformation deploy \
@@ -136,7 +154,7 @@ aws cloudformation deploy \
     UsersArtifactKey="$USERS_ARTIFACT_KEY" \
     MessagesArtifactKey="$MESSAGES_ARTIFACT_KEY" \
     RoomsArtifactKey="$ROOMS_ARTIFACT_KEY" \
-  --capabilities CAPABILITY_NAMED_IAM \
+  --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
   --region "$REGION" \
   --no-fail-on-empty-changeset
 
