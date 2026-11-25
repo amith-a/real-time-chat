@@ -66,7 +66,10 @@ export async function pollUntil<T>(
   throw new Error(`Timed out waiting for ${description} after ${timeoutMs}ms`);
 }
 
-/** Creates an isolated table with the same schema as infra/template.yaml and waits until it is ACTIVE. */
+/*
+ *  Creates an isolated table with the same schema as infra/core.
+ * yaml and waits until it is ACTIVE.
+ */
 export async function createTestTable(): Promise<string> {
   const name = `test-chat-${randomUUID()}`;
   await getRawClient().send(

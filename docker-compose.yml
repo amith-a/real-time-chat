@@ -4,3 +4,11 @@ services:
     command: -jar DynamoDBLocal.jar -inMemory -sharedDb
     ports:
       - '8000:8000'
+
+  cfn-lint:
+    image: python:3.12-slim
+    working_dir: /work
+    volumes:
+      - .:/work
+    entrypoint: sh -c "pip install -q cfn-lint && cfn-lint infra/core.yaml infra/template.yaml infra/nested/*.yaml infra/bootstrap/*.yaml"
+    profiles: ["lint"]

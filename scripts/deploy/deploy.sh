@@ -18,9 +18,10 @@ CORE_STACK="realtime-chat-core-${ENV}"
 APP_STACK="realtime-chat-${ENV}"
 
 # Template paths
-ARTIFACT_TEMPLATE="infra/artifacts.yaml"
+ARTIFACT_TEMPLATE="infra/bootstrap/artifacts.yaml"
 CORE_TEMPLATE="infra/core.yaml"
 APP_TEMPLATE="infra/template.yaml"
+NESTED_TEMPLATES_DIR="infra/nested"
 
 # 1. Deploy the shared artifact bucket stack
 echo "Deploying artifact bucket stack..."
@@ -134,8 +135,7 @@ ROOMS_ARTIFACT_KEY=$(package_and_upload rooms)
 
 # 7. Upload nested CloudFormation templates to S3
 echo "Uploading nested stack templates..."
-aws s3 cp infra/websocket.yaml "s3://${BUCKET}/templates/websocket.yaml" --region "$REGION" --sse AES256
-aws s3 cp infra/http.yaml "s3://${BUCKET}/templates/http.yaml" --region "$REGION" --sse AES256
+aws s3 sync "$NESTED_TEMPLATES_DIR" "s3://${BUCKET}/templates/" --region "$REGION" --sse AES256
 
 # 8. Deploy the root application stack (which deploys nested WebSocket & HTTP stacks)
 echo "Deploying application stack..."
