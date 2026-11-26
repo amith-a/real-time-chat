@@ -137,8 +137,10 @@ export async function registerConnection(
       : []),
   ];
 
-  // Try 0 -> 1 first; if another concurrent $connect already incremented PRESENCE, fall back to > 0.
-  for (const expectOffline of [true, false]) {
+  // Try 0 -> 1 first; if another concurrent $connect/$disconnect flips PRESENCE, flip expectOffline and retry.
+  let expectOffline = true;
+  const maxPresenceAttempts = 4;
+  for (let attempt = 1; attempt <= maxPresenceAttempts; attempt++) {
     try {
       await sendWithRetry(() =>
         getDocClient().send(new TransactWriteCommand({ TransactItems: buildItems(expectOffline) })),
@@ -175,8 +177,13 @@ export async function registerConnection(
         return { registered: false, becameOnline: false };
       }
 
-      // If 0 -> 1 lost the race because activeConnectionCount is already > 0, retry with > 0.
-      if (expectOffline && isTransactionCanceled(error) && conditionFailedAt(reasons, 1)) {
+      // If PRESENCE precondition lost a concurrent race (0 <-> >0), flip expectation and retry.
+      if (
+        attempt < maxPresenceAttempts &&
+        isTransactionCanceled(error) &&
+        conditionFailedAt(reasons, 1)
+      ) {
+        expectOffline = !expectOffline;
         continue;
       }
 
@@ -184,11 +191,10 @@ export async function registerConnection(
     }
   }
 
-  // Fallback if activeConnectionCount flipped back to 0 between attempts.
-  await sendWithRetry(() =>
-    getDocClient().send(new TransactWriteCommand({ TransactItems: buildItems(true) })),
-  );
-  return { registered: true, becameOnline: true };
+  throw new InternalServerError('Failed to register connection after concurrent presence updates', {
+    userId,
+    connectionId,
+  });
 }
 
 export type RemoveResult =

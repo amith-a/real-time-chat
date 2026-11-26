@@ -65,7 +65,7 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
       async ({ roomId, lastSequence }) => {
         const page = await listMessagesAfter(roomId, lastSequence, { limit: limitPerRoom });
         const messages = page.items.map((m) => ({
-          messageId: m.clientMessageId,
+          messageId: m.clientMessageId ?? m.messageId,
           roomId: m.roomId,
           sequenceNumber: m.sequenceNumber,
           senderId: m.senderId,

@@ -64,7 +64,10 @@ export function encodeCursor(key?: Record<string, unknown>): string | undefined 
   return Buffer.from(JSON.stringify(key), 'utf8').toString('base64');
 }
 
-export function decodeCursor(cursor?: string): Record<string, unknown> | undefined {
+export function decodeCursor(
+  cursor?: string,
+  expectedUserId?: string,
+): Record<string, unknown> | undefined {
   if (cursor === undefined || cursor === '') return undefined;
 
   const trimmed = cursor.trim();
@@ -91,10 +94,21 @@ export function decodeCursor(cursor?: string): Record<string, unknown> | undefin
     throw new BadRequestError('Invalid pagination cursor: key object cannot be empty');
   }
 
-  if (!key.PK || !key.SK) {
+  if (
+    typeof key.PK !== 'string' ||
+    key.PK.trim() === '' ||
+    typeof key.SK !== 'string' ||
+    key.SK.trim() === ''
+  ) {
     throw new BadRequestError(
-      'Invalid pagination cursor: missing required DynamoDB key attributes (PK, SK)',
+      'Invalid pagination cursor: missing or invalid DynamoDB key attributes (PK, SK)',
     );
+  }
+
+  if (expectedUserId !== undefined) {
+    if (key.PK !== `USER#${expectedUserId}` || !key.SK.startsWith('ROOM#')) {
+      throw new BadRequestError('Invalid pagination cursor: cursor does not match target user');
+    }
   }
 
   return key;
@@ -193,7 +207,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         limit = Math.min(parsedLimit, 100);
       }
 
-      const startKey = decodeCursor(event.queryStringParameters?.cursor);
+      const startKey = decodeCursor(event.queryStringParameters?.cursor, authUser.userId);
       const page = await listRoomsForUserPage(authUser.userId, { limit, startKey });
 
       return formatHttpResponse(200, {

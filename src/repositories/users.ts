@@ -92,7 +92,6 @@ export async function ensureUserProfile(input: {
     'userId = if_not_exists(userId, :userId)',
     'updatedAt = :now',
     'GSI1PK = :gsi1pk',
-    'GSI1SK = :gsi1sk',
   ];
   const values: Record<string, unknown> = {
     ':now': now,
@@ -102,8 +101,12 @@ export async function ensureUserProfile(input: {
   };
 
   if (normalizedEmail) {
+    updates.push('GSI1SK = :gsi1sk');
     updates.push('email = :email');
     values[':email'] = normalizedEmail;
+  } else {
+    // Preserve any existing EMAIL# GSI1SK when email claim is omitted on reconnect.
+    updates.push('GSI1SK = if_not_exists(GSI1SK, :gsi1sk)');
   }
   if (input.username) {
     updates.push('username = :username');

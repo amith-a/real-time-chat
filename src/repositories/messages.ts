@@ -7,6 +7,7 @@ import {
   conditionFailedAt,
   hasRetryableReason,
   isTransactionCanceled,
+  sendWithRetry,
 } from './dynamo-errors';
 import {
   idempotencyKey,
@@ -263,37 +264,39 @@ export async function createMessage(input: CreateMessageInput): Promise<CreateMe
     };
 
     try {
-      await getDocClient().send(
-        new TransactWriteCommand({
-          TransactItems: [
-            // 0: counter
-            {
-              Update: {
-                TableName: table,
-                Key: roomCounterKey(roomId),
-                UpdateExpression: 'SET sequenceNumber = :next, updatedAt = :now',
-                ConditionExpression: 'sequenceNumber = :current',
-                ExpressionAttributeValues: { ':next': next, ':current': current, ':now': now },
+      await sendWithRetry(() =>
+        getDocClient().send(
+          new TransactWriteCommand({
+            TransactItems: [
+              // 0: counter
+              {
+                Update: {
+                  TableName: table,
+                  Key: roomCounterKey(roomId),
+                  UpdateExpression: 'SET sequenceNumber = :next, updatedAt = :now',
+                  ConditionExpression: 'sequenceNumber = :current',
+                  ExpressionAttributeValues: { ':next': next, ':current': current, ':now': now },
+                },
               },
-            },
-            // 1: message
-            {
-              Put: {
-                TableName: table,
-                Item: message,
-                ConditionExpression: 'attribute_not_exists(PK)',
+              // 1: message
+              {
+                Put: {
+                  TableName: table,
+                  Item: message,
+                  ConditionExpression: 'attribute_not_exists(PK)',
+                },
               },
-            },
-            // 2: idempotency record
-            {
-              Put: {
-                TableName: table,
-                Item: idempotency,
-                ConditionExpression: 'attribute_not_exists(PK)',
+              // 2: idempotency record
+              {
+                Put: {
+                  TableName: table,
+                  Item: idempotency,
+                  ConditionExpression: 'attribute_not_exists(PK)',
+                },
               },
-            },
-          ],
-        }),
+            ],
+          }),
+        ),
       );
       return { duplicate: false, messageId, sequenceNumber: next, createdAt: now, message };
     } catch (error) {

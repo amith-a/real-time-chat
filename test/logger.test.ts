@@ -75,4 +75,13 @@ describe('sanitize', () => {
     expect(result.message).toBe('Request failed');
     expect(result.cause.message).toBe('Underlying failure');
   });
+
+  it('redacts Authorization query parameters in URLs', () => {
+    expect(sanitize('wss://example.com/dev?Authorization=BearerSecret123&room=1')).toBe(
+      'wss://example.com/dev?Authorization=[REDACTED]&room=1',
+    );
+    expect(sanitize('wss://example.com/dev?authorization=Secret456')).toBe(
+      'wss://example.com/dev?authorization=[REDACTED]',
+    );
+  });
 });

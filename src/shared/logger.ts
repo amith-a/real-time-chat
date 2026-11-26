@@ -7,7 +7,8 @@ export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
 const SENSITIVE_KEY_REGEX = /token|secret|password|authorization|api[-_]?key|cookie|credential/i;
 
-const TOKEN_URL_REGEX = /([?&](?:id_?token|access_?token|refresh_?token|token)=)[^&\s"]+/gi;
+const TOKEN_URL_REGEX =
+  /([?&](?:id_?token|access_?token|refresh_?token|token|authorization)=)[^&\s"]+/gi;
 
 /**
  * Recursively sanitizes data before logging.

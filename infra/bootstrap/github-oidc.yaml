@@ -206,6 +206,8 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/realtime-chat-*"
                   - !Sub "arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/realtime-chat-*/index/*"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/*-chat-table"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/*-chat-table/index/*"
 
               # 6a. Cognito: CreateUserPool cannot be scoped to a resource
               - Sid: CognitoCreateUserPool
@@ -299,6 +301,49 @@ Resources:
                 Condition:
                   StringEquals:
                     iam:PassedToService: lambda.amazonaws.com
+
+              # 9. SQS queues for fan-out retry and DLQ
+              - Sid: SqsQueues
+                Effect: Allow
+                Action:
+                  - sqs:CreateQueue
+                  - sqs:DeleteQueue
+                  - sqs:GetQueueAttributes
+                  - sqs:SetQueueAttributes
+                  - sqs:GetQueueUrl
+                  - sqs:TagQueue
+                  - sqs:UntagQueue
+                  - sqs:ListQueueTags
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:sqs:*:${AWS::AccountId}:realtime-chat-*"
+
+              # 10. Lambda EventSourceMappings (SQS -> Lambda)
+              - Sid: LambdaEventSourceMappings
+                Effect: Allow
+                Action:
+                  - lambda:CreateEventSourceMapping
+                  - lambda:DeleteEventSourceMapping
+                  - lambda:UpdateEventSourceMapping
+                  - lambda:GetEventSourceMapping
+                  - lambda:ListEventSourceMappings
+                Resource: "*"
+
+              # 11. EventBridge rules for scheduled sweeper
+              - Sid: EventBridgeRules
+                Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:DescribeRule
+                  - events:EnableRule
+                  - events:DisableRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                  - events:ListTargetsByRule
+                  - events:TagResource
+                  - events:UntagResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:events:*:${AWS::AccountId}:rule/realtime-chat-*"
 
 Outputs:
   RoleArn:

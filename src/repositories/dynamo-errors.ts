@@ -51,6 +51,25 @@ const RETRYABLE_CODES = new Set([
   'ProvisionedThroughputExceeded',
 ]);
 
+const RETRYABLE_TOP_LEVEL_ERROR_NAMES = new Set([
+  'ProvisionedThroughputExceededException',
+  'RequestLimitExceeded',
+  'ThrottlingException',
+  'TransactionConflictException',
+  'InternalServerError',
+]);
+
+export function isTransientDynamoError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const err = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+  if (err.name && RETRYABLE_TOP_LEVEL_ERROR_NAMES.has(err.name)) {
+    return true;
+  }
+  return err.$metadata?.httpStatusCode === 500 || err.$metadata?.httpStatusCode === 503;
+}
+
 export function hasRetryableReason(reasons: CancellationReason[]): boolean {
   return reasons.some((r) => r.Code !== undefined && RETRYABLE_CODES.has(r.Code));
 }
@@ -67,15 +86,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Retries only transient cancellations (TransactionConflict, throttling). A failed condition is final. */
+/** Retries transient DynamoDB errors and non-conditional transaction cancellations. */
 export async function sendWithRetry<T>(send: () => Promise<T>, maxAttempts = 8): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     try {
       return await send();
     } catch (error) {
       const reasons = cancellationReasons(error);
-      const transient =
+      const transientCancellation =
         isTransactionCanceled(error) && hasRetryableReason(reasons) && !hasConditionFailed(reasons);
+      const transient = transientCancellation || isTransientDynamoError(error);
       if (!transient || attempt >= maxAttempts) throw error;
       await sleep(Math.random() * 25 * attempt);
     }

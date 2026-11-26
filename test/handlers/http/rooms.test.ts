@@ -253,6 +253,39 @@ describe('Rooms HTTP Handler', () => {
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).message).toContain('limit must be an integer between 1 and 100');
     });
+
+    it('returns 400 when cursor has non-string PK/SK or belongs to another user', async () => {
+      const nonStringCursor = Buffer.from(JSON.stringify({ PK: 123, SK: {} }), 'utf8').toString(
+        'base64',
+      );
+      const res1 = (await roomsHandler(
+        createHttpEvent({
+          method: 'GET',
+          rawPath: '/rooms',
+          userId: 'user-admin',
+          queryStringParameters: { cursor: nonStringCursor },
+        }),
+        mockContext,
+        mockCallback,
+      )) as HttpResponse;
+      expect(res1.statusCode).toBe(400);
+
+      const otherUserCursor = Buffer.from(
+        JSON.stringify({ PK: 'USER#other-user', SK: 'ROOM#r1' }),
+        'utf8',
+      ).toString('base64');
+      const res2 = (await roomsHandler(
+        createHttpEvent({
+          method: 'GET',
+          rawPath: '/rooms',
+          userId: 'user-admin',
+          queryStringParameters: { cursor: otherUserCursor },
+        }),
+        mockContext,
+        mockCallback,
+      )) as HttpResponse;
+      expect(res2.statusCode).toBe(400);
+    });
   });
 
   describe('GET /rooms/{roomId} — Get Room Details', () => {

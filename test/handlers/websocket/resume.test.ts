@@ -245,4 +245,38 @@ describe('WebSocket resume handler', () => {
 
     expect(res.statusCode).toBe(400);
   });
+
+  it('falls back to canonical messageId when clientMessageId is absent', async () => {
+    vi.spyOn(repositories, 'getConnectionOwner').mockResolvedValue('alice');
+    vi.spyOn(repositories, 'isMember').mockResolvedValue(true);
+    vi.spyOn(repositories, 'listMessagesAfter').mockResolvedValue({
+      items: [
+        {
+          PK: 'ROOM#room-1',
+          SK: 'MSG#0000000001',
+          roomId: 'room-1',
+          sequenceNumber: 1,
+          senderId: 'bob',
+          messageId: 'canonical-msg-1',
+          clientMessageId: undefined as unknown as string,
+          content: 'hello',
+          messageType: 'TEXT',
+          createdAt: '2026-11-26T12:00:00Z',
+        },
+      ],
+      nextKey: undefined,
+    });
+
+    const res = (await handler(
+      makeEvent(
+        JSON.stringify({ action: 'resume', rooms: [{ roomId: 'room-1', lastSequence: 0 }] }),
+      ),
+      mockContext,
+      mockCallback,
+    )) as { statusCode: number; body: string };
+
+    expect(res.statusCode).toBe(200);
+    const ack = JSON.parse(res.body);
+    expect(ack.rooms[0].messages[0].messageId).toBe('canonical-msg-1');
+  });
 });
