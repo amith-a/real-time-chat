@@ -1,0 +1,23 @@
+meta {
+  name: Typing Start
+  type: ws
+  seq: 2
+}
+
+ws {
+  url: {{webSocket}}?token={{idToken}}
+  body: ws
+  auth: inherit
+}
+
+body:ws {
+  name: typing-start
+  type: json
+  content: '''
+    {
+      "action": "typing",
+      "roomId": "{{roomId}}",
+      "isTyping": true
+    }
+  '''
+}

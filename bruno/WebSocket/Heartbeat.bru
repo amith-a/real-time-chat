@@ -1,0 +1,21 @@
+meta {
+  name: Heartbeat
+  type: ws
+  seq: 1
+}
+
+ws {
+  url: {{webSocket}}?token={{idToken}}
+  body: ws
+  auth: inherit
+}
+
+body:ws {
+  name: heartbeat
+  type: json
+  content: '''
+    {
+      "action": "heartbeat"
+    }
+  '''
+}

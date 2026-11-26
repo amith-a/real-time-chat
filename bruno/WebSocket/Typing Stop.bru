@@ -1,0 +1,23 @@
+meta {
+  name: Typing Stop
+  type: ws
+  seq: 3
+}
+
+ws {
+  url: {{webSocket}}?token={{idToken}}
+  body: ws
+  auth: inherit
+}
+
+body:ws {
+  name: typing-stop
+  type: json
+  content: '''
+    {
+      "action": "typing",
+      "roomId": "{{roomId}}",
+      "isTyping": false
+    }
+  '''
+}

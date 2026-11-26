@@ -11,9 +11,14 @@ ws {
 }
 
 body:ws {
-  name: message 1
+  name: sendMessage
   type: json
   content: '''
-    {}
+    {
+      "action": "sendMessage",
+      "roomId": "{{roomId}}",
+      "messageId": "{{$guid}}",
+      "body": "Hello from Bruno!"
+    }
   '''
 }
