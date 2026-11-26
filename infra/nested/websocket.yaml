@@ -1003,7 +1003,7 @@ Resources:
       Name: !Sub "${ParentStackName}-sweeper-schedule"
       Description: "Periodic stale connection and presence sweeper (5 minutes)"
       ScheduleExpression: "rate(5 minutes)"
-      State: ENABLED
+      State: DISABLED
       Targets:
         - Arn: !GetAtt SweeperFunction.Arn
           Id: SweeperLambdaTarget
