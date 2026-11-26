@@ -36,6 +36,16 @@ jobs:
       - name: Run linter
         run: npm run lint
 
+      - name: Set up Python for cfn-lint
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run CloudFormation linter
+        run: |
+          pip install -q cfn-lint
+          cfn-lint infra/core.yaml infra/template.yaml infra/nested/*.yaml infra/bootstrap/*.yaml
+
       - name: Run typecheck
         run: npm run typecheck
 
