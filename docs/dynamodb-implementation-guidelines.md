@@ -67,6 +67,7 @@
 The initial stale-connection sweeper uses a paginated Scan. This is a deliberate initial trade-off, not a general retrieval strategy.
 
 In Phase 14, record:
+
 - Total table item count.
 - Scan duration.
 - Items evaluated.
@@ -109,6 +110,7 @@ When asked to implement a repository operation:
 8. If the requested behavior cannot be implemented with the documented model, stop and explain the missing access pattern/design decision rather than inventing a key or query.
 
 When proposing a schema or access-pattern change:
+
 - Explain which user-visible workflow requires it.
 - Explain its read/write/storage cost and consistency implications.
 - Update `access-patterns.md` first.
@@ -118,6 +120,7 @@ When proposing a schema or access-pattern change:
 ## 10. Out of scope
 
 This file does not define:
+
 - Unit/integration test cases or fixtures.
 - Lambda handler and API Gateway route implementation.
 - Infrastructure deployment configuration.

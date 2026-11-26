@@ -25,7 +25,7 @@ Repository code, tests, query implementation rules, and agent-specific implement
 ## 2. Table design
 
 | Setting | Value |
-|---|---|
+| --- | --- |
 | Table | `ChatTable` |
 | Design | Single-table |
 | Partition key | `PK` (String) |
@@ -35,7 +35,7 @@ Repository code, tests, query implementation rules, and agent-specific implement
 GSI1 key attributes:
 
 | Attribute | Role |
-|---|---|
+| --- | --- |
 | `GSI1PK` | GSI partition key |
 | `GSI1SK` | GSI sort key |
 
@@ -80,13 +80,14 @@ The examples below use symbolic IDs. The actual item also contains its primary k
 ### 4.1 User profile
 
 | Attribute | Value |
-|---|---|
+| --- | --- |
 | `PK` | `USER#<userId>` |
 | `SK` | `PROFILE` |
 | `GSI1PK` | `USERS` |
 | `GSI1SK` | `EMAIL#<email>` (or `USER#<userId>`) |
 
 Stores the user's profile data. Supports:
+
 - **AP1 (Get user profile by ID)**: Direct `GetItem` on `PK = USER#<userId>, SK = PROFILE`.
 - **Get user by email**: `Query` on GSI1 with `GSI1PK = USERS AND GSI1SK = EMAIL#<email>`.
 - **List all users**: `Query` on GSI1 with `GSI1PK = USERS`.
@@ -95,7 +96,7 @@ Stores the user's profile data. Supports:
 ### 4.2 Connection
 
 | Attribute | Value |
-|---|---|
+| --- | --- |
 | `PK` | `USER#<userId>` |
 | `SK` | `CONNECTION#<connectionId>` |
 
@@ -113,7 +114,7 @@ A user can have multiple simultaneous connections, for example multiple browser 
 The API Gateway WebSocket `$disconnect` event does not reliably contain the authorizer context needed to identify the owner of a connection. Therefore, the application maintains this reverse lookup item **by default** (`withOwnerItem = true`):
 
 | Attribute | Value |
-|---|---|
+| --- | --- |
 | `PK` | `CONN#<connectionId>` |
 | `SK` | `OWNER` |
 
@@ -127,7 +128,7 @@ Create this item in the same transaction as the connection item. Delete it in th
 ### 4.4 Presence
 
 | Attribute | Value |
-|---|---|
+| --- | --- |
 | `PK` | `USER#<userId>` |
 | `SK` | `PRESENCE` |
 
@@ -146,7 +147,7 @@ Do not store a separate `status` field. Presence is derived:
 ### 4.5 Room metadata
 
 | Attribute | Value |
-|---|---|
+| --- | --- |
 | `PK` | `ROOM#<roomId>` |
 | `SK` | `META` |
 
@@ -162,7 +163,7 @@ Do not add `lastMessageAt` or `lastMessageSequence` to META initially. Updating 
 ### 4.6 Membership
 
 | Attribute | Value |
-|---|---|
+| --- | --- |
 | `PK` | `USER#<userId>` |
 | `SK` | `ROOM#<roomId>` |
 | `GSI1PK` | `ROOM#<roomId>` |
@@ -185,7 +186,7 @@ Membership writes use `attribute_not_exists(PK)` so a retry or competing room-cr
 ### 4.7 Message
 
 | Attribute | Value |
-|---|---|
+| --- | --- |
 | `PK` | `ROOM#<roomId>` |
 | `SK` | `MSG#<zero-padded-sequence>` |
 
@@ -203,7 +204,7 @@ A message is stored once in its room. Recipients are resolved through room membe
 ### 4.8 Room sequence counter
 
 | Attribute | Value |
-|---|---|
+| --- | --- |
 | `PK` | `ROOM#<roomId>` |
 | `SK` | `COUNTER` |
 
@@ -217,7 +218,7 @@ Initialize `sequenceNumber` to `0` when the room is created. The first committed
 ### 4.9 Idempotency record
 
 | Attribute | Value |
-|---|---|
+| --- | --- |
 | `PK` | `IDEMPOTENCY#<userId>#ROOM#<roomId>` |
 | `SK` | `REQUEST#<clientMessageId>` |
 
@@ -285,7 +286,7 @@ Network arrival order is not guaranteed to match sequence order. The sequence is
 The following catalogue preserves the AP1–AP17 identifiers from the original project plan. An operation may use a transaction containing multiple item actions; the operation column identifies the DynamoDB API operation or transaction.
 
 | ID | Access pattern | DynamoDB operation | Key / condition |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | AP1 | Get a user profile | `GetItem` | `USER#<userId>` / `PROFILE` |
 | AP2 | Get active connections for a user | `Query` | `PK = USER#<userId>`, `begins_with(SK, CONNECTION#)` |
 | AP3 | Register a connection | `TransactWriteItems` | Conditional connection Put + presence counter increment; include reverse-owner Put if required |
@@ -357,6 +358,7 @@ Group room creation creates the room and its initial members in one transaction:
 3. Membership items for each unique member (`PK = USER#<userId>`, `SK = ROOM#<roomId>`).
 
 Rules and constraints:
+
 - **Transaction item limit**: DynamoDB transactions support at most 100 items. With Room META (1) and COUNTER (1), a single group room creation transaction supports at most **98 initial members**.
 - **Member deduplication**: Member entries must be deduplicated by `userId`. Duplicate target keys in the same `TransactWriteItems` call cause a DynamoDB validation failure.
 - **Race recovery**: If two requests race to create the same group room, the losing request must read the existing room META, COUNTER, and every expected member item with `ConsistentRead = true`. To avoid relying on the eventually consistent GSI1 during race checks, room META stores `memberCount` and a deterministic `membershipHash` (`SHA-256` of sorted `userId:role` pairs). The race recovery strongly validates that `existingRoom.memberCount` and `existingRoom.membershipHash` match the creation request. Only if the room and all memberships are verified complete and matching may it treat the race as an idempotent success. If any item is missing or mismatched, treat it as an invariant error and report which items are missing. Do not repair it by overwriting existing items or repeating unconditional Puts.

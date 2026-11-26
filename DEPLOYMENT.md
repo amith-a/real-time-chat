@@ -86,14 +86,16 @@ aws cloudformation describe-stacks \
 
 ### Export Stack Outputs to Shell Variables
 
-#### Bash / Git Bash / macOS:
+#### Bash / Git Bash / macOS
+
 ```bash
 export USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name realtime-chat-dev --region ap-south-1 --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text)
 export USER_POOL_CLIENT_ID=$(aws cloudformation describe-stacks --stack-name realtime-chat-dev --region ap-south-1 --query "Stacks[0].Outputs[?OutputKey=='UserPoolClientId'].OutputValue" --output text)
 export WS_ENDPOINT=$(aws cloudformation describe-stacks --stack-name realtime-chat-dev --region ap-south-1 --query "Stacks[0].Outputs[?OutputKey=='WebSocketEndpoint'].OutputValue" --output text)
 ```
 
-#### PowerShell:
+#### PowerShell
+
 ```powershell
 $env:USER_POOL_ID = aws cloudformation describe-stacks --stack-name realtime-chat-dev --region ap-south-1 --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text
 $env:USER_POOL_CLIENT_ID = aws cloudformation describe-stacks --stack-name realtime-chat-dev --region ap-south-1 --query "Stacks[0].Outputs[?OutputKey=='UserPoolClientId'].OutputValue" --output text
@@ -107,6 +109,7 @@ $env:WS_ENDPOINT = aws cloudformation describe-stacks --stack-name realtime-chat
 The project provides a TypeScript CLI script to test Cognito sign-up, confirmation, and login flows.
 
 ### Sign Up a New User
+
 ```bash
 npx tsx scripts/auth/auth-cli.ts signup <clientId> <email> <password>
 
@@ -115,6 +118,7 @@ npx tsx scripts/auth/auth-cli.ts signup $USER_POOL_CLIENT_ID user@example.com My
 ```
 
 ### Admin Confirm User (Bypass Email Verification Code)
+
 In development, use admin-confirm to verify the user without requiring an email verification code:
 
 ```bash
@@ -125,6 +129,7 @@ npx tsx scripts/auth/auth-cli.ts admin-confirm $USER_POOL_ID user@example.com
 ```
 
 ### Confirm Sign-Up with Verification Code (Standard Flow)
+
 ```bash
 npx tsx scripts/auth/auth-cli.ts confirm <clientId> <email> <code>
 
@@ -133,6 +138,7 @@ npx tsx scripts/auth/auth-cli.ts confirm $USER_POOL_CLIENT_ID user@example.com 1
 ```
 
 ### Login & Generate ID Token
+
 Authenticates using `USER_PASSWORD_AUTH` flow and outputs the **Cognito ID Token** needed for WebSocket `$connect`:
 
 ```bash
@@ -166,6 +172,7 @@ Output confirms the token validity, Cognito User ID (`sub`), email, and token ex
 ## 6. Testing Lambda Authorizer & WebSocket Handshake
 
 ### Invoke the Lambda Authorizer Directly via AWS CLI
+
 You can test the authorizer function with a test payload:
 
 ```bash
@@ -180,6 +187,7 @@ cat response.json
 ```
 
 ### Connect to WebSocket API via `wscat`
+
 Connect using the Cognito ID Token retrieved from the login command:
 
 ```bash

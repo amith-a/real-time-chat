@@ -22,9 +22,11 @@ Authorization: Bearer <jwt-token>
 
 1. **Query String Parameter (`?token=<jwt>`)**:
    - **Approach**: The client includes the token in the URL query string when connecting:
+
      ```javascript
      const ws = new WebSocket(`wss://${apiEndpoint}/${stage}?token=${idToken}`);
      ```
+
    - **Tradeoff**: Query parameters may be recorded in access logs, proxy logs, and browser history.
    - **Mitigation**:
      - Redact/filter `token` parameters from API Gateway access logs.
