@@ -1,4 +1,9 @@
-import type { APIGatewayProxyWebsocketHandlerV2 } from 'aws-lambda';
+import type {
+  APIGatewayProxyResultV2,
+  APIGatewayProxyWebsocketEventV2,
+  APIGatewayProxyWebsocketHandlerV2,
+  Context,
+} from 'aws-lambda';
 import {
   createDirectRoom,
   createMessage,
@@ -12,6 +17,8 @@ import {
   BadRequestError,
   DEFAULT_DYNAMODB_CONCURRENCY,
   DEFAULT_GATEWAY_CONCURRENCY,
+  enqueueFanoutRetries,
+  type FanoutRetryMessage,
   ForbiddenError,
   formatResponse,
   getAuthenticatedUser,
@@ -28,7 +35,12 @@ import {
   sendMessageSchema,
 } from '../../shared';
 
-export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
+const DEFAULT_TIMEOUT_BUFFER_MS = 2000;
+
+export const handler: APIGatewayProxyWebsocketHandlerV2 = async (
+  event: APIGatewayProxyWebsocketEventV2,
+  context?: Context,
+): Promise<APIGatewayProxyResultV2> => {
   const log = logger.withContext({
     connectionId: event.requestContext?.connectionId,
     routeKey: event.requestContext?.routeKey || 'sendMessage',
@@ -151,6 +163,7 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
     let failedCount = 0;
     let staleCount = 0;
     let errorCount = 0;
+    let queuedRetryCount = 0;
 
     // If not a duplicate replay, fan out message to all destinations
     if (!result.duplicate && destinations.length > 0) {
@@ -166,43 +179,100 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
         createdAt: result.createdAt,
       };
 
-      const deliveryResults = await pMapSettled(
-        destinations,
-        (dest) =>
-          postToConnection({
-            connectionId: dest.connectionId,
-            userId: dest.userId,
-            payload: deliveryPayload,
-            endpoint,
-          }),
-        DEFAULT_GATEWAY_CONCURRENCY,
+      const timeoutBufferMs = Number(
+        process.env.FANOUT_TIMEOUT_BUFFER_MS ?? DEFAULT_TIMEOUT_BUFFER_MS,
       );
-      deliveryDurationMs = Date.now() - deliveryStart;
+      const isNearTimeout =
+        typeof context?.getRemainingTimeInMillis === 'function' &&
+        context.getRemainingTimeInMillis() <= timeoutBufferMs;
 
-      for (let i = 0; i < deliveryResults.length; i++) {
-        const deliveryResult = deliveryResults[i];
-        const dest = destinations[i];
+      const failedDeliveries: FanoutRetryMessage[] = [];
+      const toRetryItem = (
+        dest: { connectionId: string; userId: string },
+        reason: string,
+      ): FanoutRetryMessage => ({
+        connectionId: dest.connectionId,
+        userId: dest.userId,
+        endpoint,
+        payload: deliveryPayload,
+        roomId: targetRoomId,
+        messageId,
+        sequenceNumber: result.sequenceNumber,
+        failedAt: new Date().toISOString(),
+        reason,
+      });
 
-        if (deliveryResult.status === 'fulfilled') {
-          if (deliveryResult.value === true) {
-            deliveredCount++;
+      if (isNearTimeout) {
+        errorCount = destinations.length;
+        failedCount = destinations.length;
+        for (const dest of destinations) {
+          failedDeliveries.push(toRetryItem(dest, 'LambdaTimeoutApproaching'));
+        }
+        log.warn('Lambda approaching timeout before fan-out; offloading destinations to SQS', {
+          roomId: targetRoomId,
+          messageId,
+          remainingTimeMs: context.getRemainingTimeInMillis(),
+          destinationCount: destinations.length,
+        });
+      } else {
+        const deliveryResults = await pMapSettled(
+          destinations,
+          (dest) =>
+            postToConnection({
+              connectionId: dest.connectionId,
+              userId: dest.userId,
+              payload: deliveryPayload,
+              endpoint,
+            }),
+          DEFAULT_GATEWAY_CONCURRENCY,
+        );
+        deliveryDurationMs = Date.now() - deliveryStart;
+
+        for (let i = 0; i < deliveryResults.length; i++) {
+          const deliveryResult = deliveryResults[i];
+          const dest = destinations[i];
+
+          if (deliveryResult.status === 'fulfilled') {
+            if (deliveryResult.value === true) {
+              deliveredCount++;
+            } else {
+              // postToConnection caught 410 GoneException and pruned the connection
+              staleCount++;
+              failedCount++;
+            }
           } else {
-            // postToConnection caught 410 GoneException and pruned the connection
-            staleCount++;
+            // Unexpected delivery failure (e.g. network error, 5xx, 429)
+            errorCount++;
             failedCount++;
-          }
-        } else {
-          // Unexpected delivery failure (e.g. network error, 5xx)
-          errorCount++;
-          failedCount++;
 
-          const reason = deliveryResult.reason;
-          log.warn('Delivery failure to connection', {
-            connectionId: dest.connectionId,
-            targetUserId: dest.userId,
-            errorName: reason instanceof Error ? reason.name : 'UnknownError',
-            errorMessage: reason instanceof Error ? reason.message : String(reason),
-          });
+            const reason = deliveryResult.reason;
+            const reasonMessage = reason instanceof Error ? reason.message : String(reason);
+            log.warn('Delivery failure to connection', {
+              connectionId: dest.connectionId,
+              targetUserId: dest.userId,
+              errorName: reason instanceof Error ? reason.name : 'UnknownError',
+              errorMessage: reasonMessage,
+            });
+
+            failedDeliveries.push(toRetryItem(dest, reasonMessage));
+          }
+        }
+      }
+
+      if (failedDeliveries.length > 0 && process.env.FANOUT_RETRY_QUEUE_URL) {
+        try {
+          const enqueueResult = await enqueueFanoutRetries(failedDeliveries);
+          queuedRetryCount = enqueueResult.enqueued;
+        } catch (sqsError) {
+          log.error(
+            'Failed to enqueue failed fan-out deliveries to SQS',
+            sqsError instanceof Error ? sqsError : new Error(String(sqsError)),
+            {
+              roomId: targetRoomId,
+              messageId,
+              failedDeliveryCount: failedDeliveries.length,
+            },
+          );
         }
       }
     }
@@ -228,6 +298,7 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
       failedCount,
       staleCount,
       errorCount,
+      queuedRetryCount,
       metrics: {
         membershipLookupDurationMs,
         connectionResolutionDurationMs,

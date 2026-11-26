@@ -7,4 +7,5 @@ export * from './management-api';
 export * from './presence';
 export * from './responses';
 export * from './schemas';
+export * from './sqs-fanout';
 export * from './websocket';

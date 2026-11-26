@@ -11,6 +11,8 @@ await build({
     'src/handlers/websocket/sendMessage.ts',
     'src/handlers/websocket/typing.ts',
     'src/handlers/scheduled/sweeper.ts',
+    'src/handlers/sqs/fanoutRetry.ts',
+    'src/handlers/sqs/fanoutReplay.ts',
     'src/handlers/http/users.ts',
     'src/handlers/http/messages.ts',
     'src/handlers/http/rooms.ts',

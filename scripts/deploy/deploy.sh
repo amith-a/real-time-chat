@@ -133,6 +133,8 @@ HEARTBEAT_ARTIFACT_KEY=$(package_and_upload heartbeat)
 RESUME_ARTIFACT_KEY=$(package_and_upload resume)
 TYPING_ARTIFACT_KEY=$(package_and_upload typing)
 SWEEPER_ARTIFACT_KEY=$(package_and_upload sweeper)
+FANOUT_RETRY_ARTIFACT_KEY=$(package_and_upload fanoutRetry)
+FANOUT_REPLAY_ARTIFACT_KEY=$(package_and_upload fanoutReplay)
 USERS_ARTIFACT_KEY=$(package_and_upload users)
 MESSAGES_ARTIFACT_KEY=$(package_and_upload messages)
 ROOMS_ARTIFACT_KEY=$(package_and_upload rooms)
@@ -159,6 +161,8 @@ aws cloudformation deploy \
     ResumeArtifactKey="$RESUME_ARTIFACT_KEY" \
     TypingArtifactKey="$TYPING_ARTIFACT_KEY" \
     SweeperArtifactKey="$SWEEPER_ARTIFACT_KEY" \
+    FanoutRetryArtifactKey="$FANOUT_RETRY_ARTIFACT_KEY" \
+    FanoutReplayArtifactKey="$FANOUT_REPLAY_ARTIFACT_KEY" \
     UsersArtifactKey="$USERS_ARTIFACT_KEY" \
     MessagesArtifactKey="$MESSAGES_ARTIFACT_KEY" \
     RoomsArtifactKey="$ROOMS_ARTIFACT_KEY" \

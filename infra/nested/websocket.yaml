@@ -31,6 +31,10 @@ Parameters:
     Type: String
   SweeperArtifactKey:
     Type: String
+  FanoutRetryArtifactKey:
+    Type: String
+  FanoutReplayArtifactKey:
+    Type: String
 
 Resources:
   AuthorizerLogGroup:
@@ -530,6 +534,7 @@ Resources:
       - SendMessageLoggingPolicy
       - SendMessageDynamoDBPolicy
       - SendMessageManageConnectionsPolicy
+      - SendMessageSqsPolicy
     Properties:
       FunctionName: !Sub "${ParentStackName}-send-message"
       Runtime: nodejs22.x
@@ -544,6 +549,7 @@ Resources:
           TABLE_NAME:
             Fn::ImportValue: !Sub "${Environment}-chat-table-name"
           API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+          FANOUT_RETRY_QUEUE_URL: !Ref FanoutRetryQueue
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
 
@@ -1131,6 +1137,560 @@ Resources:
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
 
+  FanoutRetryDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ParentStackName}-fanout-retry-dlq"
+      MessageRetentionPeriod: 1209600
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  FanoutRetryQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ParentStackName}-fanout-retry"
+      VisibilityTimeout: 90
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt FanoutRetryDLQ.Arn
+        maxReceiveCount: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  SendMessageSqsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-send-message-sqs"
+      Roles:
+        - !Ref SendMessageExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource:
+              - !GetAtt FanoutRetryQueue.Arn
+
+  FanoutRetryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-fanout-retry"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  FanoutRetryExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ParentStackName}-fanout-retry-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  FanoutRetryLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-retry-logging"
+      Roles:
+        - !Ref FanoutRetryExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt FanoutRetryLogGroup.Arn
+              - !Sub "${FanoutRetryLogGroup.Arn}:*"
+
+  FanoutRetrySqsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-retry-sqs"
+      Roles:
+        - !Ref FanoutRetryExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+              - sqs:ChangeMessageVisibility
+            Resource:
+              - !GetAtt FanoutRetryQueue.Arn
+
+  FanoutRetryDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-retry-dynamodb"
+      Roles:
+        - !Ref FanoutRetryExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+            Resource:
+              - Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+              - !Sub
+                - "${TableArn}/index/GSI1"
+                - TableArn:
+                    Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+
+  FanoutRetryManageConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-retry-manage-connections"
+      Roles:
+        - !Ref FanoutRetryExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - execute-api:ManageConnections
+            Resource:
+              - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
+
+  FanoutRetryFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - FanoutRetryLogGroup
+      - FanoutRetryLoggingPolicy
+      - FanoutRetrySqsPolicy
+      - FanoutRetryDynamoDBPolicy
+      - FanoutRetryManageConnectionsPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-fanout-retry"
+      Runtime: nodejs22.x
+      Handler: fanoutRetry.handler
+      Timeout: 15
+      Role: !GetAtt FanoutRetryExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref FanoutRetryArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+          FANOUT_RETRY_QUEUE_URL: !Ref FanoutRetryQueue
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  FanoutRetryEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt FanoutRetryQueue.Arn
+      FunctionName: !GetAtt FanoutRetryFunction.Arn
+      BatchSize: 10
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+  FanoutReplayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-fanout-replay"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  FanoutReplayExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ParentStackName}-fanout-replay-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  FanoutReplayLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-replay-logging"
+      Roles:
+        - !Ref FanoutReplayExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt FanoutReplayLogGroup.Arn
+              - !Sub "${FanoutReplayLogGroup.Arn}:*"
+
+  FanoutReplaySqsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-replay-sqs"
+      Roles:
+        - !Ref FanoutReplayExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+            Resource:
+              - !GetAtt FanoutRetryDLQ.Arn
+
+  FanoutReplayDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-replay-dynamodb"
+      Roles:
+        - !Ref FanoutReplayExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+            Resource:
+              - Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+              - !Sub
+                - "${TableArn}/index/GSI1"
+                - TableArn:
+                    Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+
+  FanoutReplayManageConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-replay-manage-connections"
+      Roles:
+        - !Ref FanoutReplayExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - execute-api:ManageConnections
+            Resource:
+              - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
+
+  FanoutReplayFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - FanoutReplayLogGroup
+      - FanoutReplayLoggingPolicy
+      - FanoutReplaySqsPolicy
+      - FanoutReplayDynamoDBPolicy
+      - FanoutReplayManageConnectionsPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-fanout-replay"
+      Runtime: nodejs22.x
+      Handler: fanoutReplay.handler
+      Timeout: 30
+      Role: !GetAtt FanoutReplayExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref FanoutReplayArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+          FANOUT_RETRY_DLQ_URL: !Ref FanoutRetryDLQ
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  FanoutRetryDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ParentStackName}-fanout-retry-dlq"
+      MessageRetentionPeriod: 1209600
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  FanoutRetryQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ParentStackName}-fanout-retry"
+      VisibilityTimeout: 90
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt FanoutRetryDLQ.Arn
+        maxReceiveCount: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  SendMessageSqsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-send-message-sqs"
+      Roles:
+        - !Ref SendMessageExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource:
+              - !GetAtt FanoutRetryQueue.Arn
+
+  FanoutRetryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-fanout-retry"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  FanoutRetryExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ParentStackName}-fanout-retry-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  FanoutRetryLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-retry-logging"
+      Roles:
+        - !Ref FanoutRetryExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt FanoutRetryLogGroup.Arn
+              - !Sub "${FanoutRetryLogGroup.Arn}:*"
+
+  FanoutRetrySqsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-retry-sqs"
+      Roles:
+        - !Ref FanoutRetryExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+              - sqs:ChangeMessageVisibility
+            Resource:
+              - !GetAtt FanoutRetryQueue.Arn
+
+  FanoutRetryDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-retry-dynamodb"
+      Roles:
+        - !Ref FanoutRetryExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+            Resource:
+              - Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+              - !Sub
+                - "${TableArn}/index/GSI1"
+                - TableArn:
+                    Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+
+  FanoutRetryManageConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-retry-manage-connections"
+      Roles:
+        - !Ref FanoutRetryExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - execute-api:ManageConnections
+            Resource:
+              - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
+
+  FanoutRetryFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - FanoutRetryLogGroup
+      - FanoutRetryLoggingPolicy
+      - FanoutRetrySqsPolicy
+      - FanoutRetryDynamoDBPolicy
+      - FanoutRetryManageConnectionsPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-fanout-retry"
+      Runtime: nodejs22.x
+      Handler: fanoutRetry.handler
+      Timeout: 15
+      Role: !GetAtt FanoutRetryExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref FanoutRetryArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+          FANOUT_RETRY_QUEUE_URL: !Ref FanoutRetryQueue
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  FanoutRetryEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt FanoutRetryQueue.Arn
+      FunctionName: !GetAtt FanoutRetryFunction.Arn
+      BatchSize: 10
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+  FanoutReplayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-fanout-replay"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  FanoutReplayExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ParentStackName}-fanout-replay-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  FanoutReplayLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-replay-logging"
+      Roles:
+        - !Ref FanoutReplayExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt FanoutReplayLogGroup.Arn
+              - !Sub "${FanoutReplayLogGroup.Arn}:*"
+
+  FanoutReplaySqsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-replay-sqs"
+      Roles:
+        - !Ref FanoutReplayExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+            Resource:
+              - !GetAtt FanoutRetryDLQ.Arn
+
+  FanoutReplayDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-replay-dynamodb"
+      Roles:
+        - !Ref FanoutReplayExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+            Resource:
+              - Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+              - !Sub
+                - "${TableArn}/index/GSI1"
+                - TableArn:
+                    Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+
+  FanoutReplayManageConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-fanout-replay-manage-connections"
+      Roles:
+        - !Ref FanoutReplayExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - execute-api:ManageConnections
+            Resource:
+              - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
+
+  FanoutReplayFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - FanoutReplayLogGroup
+      - FanoutReplayLoggingPolicy
+      - FanoutReplaySqsPolicy
+      - FanoutReplayDynamoDBPolicy
+      - FanoutReplayManageConnectionsPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-fanout-replay"
+      Runtime: nodejs22.x
+      Handler: fanoutReplay.handler
+      Timeout: 30
+      Role: !GetAtt FanoutReplayExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref FanoutReplayArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+          FANOUT_RETRY_DLQ_URL: !Ref FanoutRetryDLQ
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
 Outputs:
   WebSocketApiId:
     Description: WebSocket API ID
@@ -1147,3 +1707,15 @@ Outputs:
   SendMessageFunctionArn:
     Description: ARN of the SendMessage Lambda Function
     Value: !GetAtt SendMessageFunction.Arn
+
+  FanoutRetryQueueUrl:
+    Description: URL of the SQS Fan-out Retry Queue
+    Value: !Ref FanoutRetryQueue
+
+  FanoutRetryDLQUrl:
+    Description: URL of the SQS Fan-out Dead-Letter Queue
+    Value: !Ref FanoutRetryDLQ
+
+  FanoutReplayFunctionArn:
+    Description: ARN of the Fan-out DLQ Replay Lambda Function
+    Value: !GetAtt FanoutReplayFunction.Arn
