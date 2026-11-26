@@ -314,7 +314,7 @@ describe('connections and presence (DynamoDB Local)', () => {
       });
     });
 
-    it('$disconnect with an authorizer user that does not own the connection is safely handled', async () => {
+    it('$disconnect resolves real owner via getConnectionOwner regardless of authorizer context', async () => {
       // Legitimate user u-legit owns c-legit-1
       await connectHandler(
         makeWsEvent({
@@ -330,7 +330,7 @@ describe('connections and presence (DynamoDB Local)', () => {
         activeConnectionCount: 1,
       });
 
-      // Imposter sends $disconnect for c-legit-1 with imposter's authorizer userId
+      // $disconnect resolves the authoritative owner from CONN#<id>/OWNER even if authorizer differs
       const response = await disconnectHandler(
         makeWsEvent({
           connectionId: 'c-legit-1',
@@ -342,20 +342,19 @@ describe('connections and presence (DynamoDB Local)', () => {
       );
       expect(response).toEqual({ statusCode: 200, body: 'Disconnected' });
 
-      // u-legit's connection and presence must be completely intact
-      const legitConn = await getConnection('u-legit', 'c-legit-1', true);
-      expect(legitConn).toBeDefined();
-      expect(legitConn?.connectionId).toBe('c-legit-1');
-      expect(await getPresence('u-legit')).toMatchObject({
-        online: true,
-        activeConnectionCount: 1,
+      // u-legit's connection is removed and presence decremented to 0
+      expect(await getConnection('u-legit', 'c-legit-1', true)).toBeUndefined();
+      expect(await getPresence('u-legit', true)).toMatchObject({
+        online: false,
+        activeConnectionCount: 0,
       });
 
-      // u-imposter has not altered their own presence count
+      // u-imposter's presence was never touched
       expect((await getPresence('u-imposter')).activeConnectionCount).toBe(0);
     });
 
     it('$disconnect returns 200 even when database cleanup fails', async () => {
+      vi.spyOn(repos, 'getConnectionOwner').mockResolvedValueOnce('u-cleanup-fail');
       const spy = vi
         .spyOn(repos, 'removeConnection')
         .mockRejectedValueOnce(new Error('Simulated DynamoDB outage'));
@@ -364,15 +363,16 @@ describe('connections and presence (DynamoDB Local)', () => {
         makeWsEvent({
           connectionId: 'c-cleanup-fail',
           routeKey: '$disconnect',
-          authorizer: { userId: 'u-cleanup-fail', email: 'fail@example.com' },
         }),
         mockContext,
         mockCallback,
       );
 
       expect(response).toEqual({ statusCode: 200, body: 'Disconnected' });
-      expect(spy).toHaveBeenCalled();
-      spy.mockRestore();
+      expect(spy).toHaveBeenCalledWith({
+        userId: 'u-cleanup-fail',
+        connectionId: 'c-cleanup-fail',
+      });
     });
   });
 });
