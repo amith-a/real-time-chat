@@ -121,7 +121,7 @@ describe('WebSocket resume handler', () => {
               roomId: 'room-1',
               sequenceNumber: 185,
               senderId: 'bob',
-              content: 'Missed message 185',
+              body: 'Missed message 185',
               messageType: 'TEXT',
               createdAt: '2026-11-26T12:00:01Z',
             },
@@ -137,6 +137,103 @@ describe('WebSocket resume handler', () => {
         },
       ],
     });
+  });
+
+  it('supports multi-page recovery pagination using hasMore and nextAfterSequence', async () => {
+    vi.spyOn(repositories, 'getConnectionOwner').mockResolvedValue('alice');
+    vi.spyOn(repositories, 'isMember').mockResolvedValue(true);
+    vi.spyOn(repositories, 'listMessagesAfter').mockImplementation(async (_roomId, afterSeq) => {
+      if (afterSeq === 10) {
+        return {
+          items: [
+            {
+              PK: 'ROOM#room-1',
+              SK: 'MSG#00000000000000000011',
+              roomId: 'room-1',
+              sequenceNumber: 11,
+              senderId: 'bob',
+              messageId: 'msg-11',
+              clientMessageId: 'msg-11',
+              content: 'm11',
+              messageType: 'TEXT',
+              createdAt: '2026-11-26T12:00:01Z',
+            },
+            {
+              PK: 'ROOM#room-1',
+              SK: 'MSG#00000000000000000012',
+              roomId: 'room-1',
+              sequenceNumber: 12,
+              senderId: 'bob',
+              messageId: 'msg-12',
+              clientMessageId: 'msg-12',
+              content: 'm12',
+              messageType: 'TEXT',
+              createdAt: '2026-11-26T12:00:02Z',
+            },
+          ],
+          nextKey: { PK: 'ROOM#room-1', SK: 'MSG#00000000000000000012' },
+        };
+      }
+      return {
+        items: [
+          {
+            PK: 'ROOM#room-1',
+            SK: 'MSG#00000000000000000013',
+            roomId: 'room-1',
+            sequenceNumber: 13,
+            senderId: 'bob',
+            messageId: 'msg-13',
+            clientMessageId: 'msg-13',
+            content: 'm13',
+            messageType: 'TEXT',
+            createdAt: '2026-11-26T12:00:03Z',
+          },
+        ],
+        nextKey: undefined,
+      };
+    });
+
+    // Page 1
+    const res1 = (await handler(
+      makeEvent(
+        JSON.stringify({
+          action: 'resume',
+          rooms: [{ roomId: 'room-1', lastSequence: 10 }],
+          limitPerRoom: 2,
+        }),
+      ),
+      mockContext,
+      mockCallback,
+    )) as { statusCode: number; body: string };
+
+    expect(res1.statusCode).toBe(200);
+    const ack1 = JSON.parse(res1.body);
+    expect(ack1.rooms[0].hasMore).toBe(true);
+    expect(ack1.rooms[0].nextAfterSequence).toBe(12);
+    expect(ack1.rooms[0].messages.map((m: { sequenceNumber: number }) => m.sequenceNumber)).toEqual(
+      [11, 12],
+    );
+
+    // Page 2 using nextAfterSequence
+    const res2 = (await handler(
+      makeEvent(
+        JSON.stringify({
+          action: 'resume',
+          rooms: [{ roomId: 'room-1', lastSequence: ack1.rooms[0].nextAfterSequence }],
+          limitPerRoom: 2,
+        }),
+      ),
+      mockContext,
+      mockCallback,
+    )) as { statusCode: number; body: string };
+
+    expect(res2.statusCode).toBe(200);
+    const ack2 = JSON.parse(res2.body);
+    expect(ack2.rooms[0].hasMore).toBe(false);
+    expect(ack2.rooms[0].nextAfterSequence).toBe(13);
+    expect(ack2.rooms[0].messages.map((m: { sequenceNumber: number }) => m.sequenceNumber)).toEqual(
+      [13],
+    );
   });
 
   it('returns 400 for invalid payload', async () => {

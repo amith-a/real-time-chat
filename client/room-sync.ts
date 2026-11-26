@@ -19,19 +19,93 @@ export interface IngestResult<T extends SequencedMessage> {
   missingAfterSequence?: number;
 }
 
+/** Storage abstraction for persisting each room's last processed sequence across restarts. */
+export interface SequenceStore {
+  getLastSequence(roomId: string): number | undefined;
+  setLastSequence(roomId: string, sequence: number): void;
+}
+
+/** Simple in-memory SequenceStore for tests or non-persistent sessions. */
+export class InMemorySequenceStore implements SequenceStore {
+  private readonly sequences = new Map<string, number>();
+
+  getLastSequence(roomId: string): number | undefined {
+    return this.sequences.get(roomId);
+  }
+
+  setLastSequence(roomId: string, sequence: number): void {
+    this.sequences.set(roomId, sequence);
+  }
+}
+
+export interface KeyValueStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+/**
+ * Browser-compatible persistent SequenceStore backed by `localStorage` (or any
+ * `Storage`-compatible key-value store). Preserves `lastProcessedSequence` across
+ * page refreshes and app restarts.
+ */
+export class LocalStorageSequenceStore implements SequenceStore {
+  private readonly storage: KeyValueStorage;
+  private readonly keyPrefix: string;
+
+  constructor(
+    storage: KeyValueStorage | undefined = typeof globalThis !== 'undefined'
+      ? (globalThis as { localStorage?: KeyValueStorage }).localStorage
+      : undefined,
+    keyPrefix = 'rtc:lastSeq:',
+  ) {
+    if (!storage) {
+      throw new Error('LocalStorageSequenceStore requires a localStorage-compatible storage');
+    }
+    this.storage = storage;
+    this.keyPrefix = keyPrefix;
+  }
+
+  getLastSequence(roomId: string): number | undefined {
+    const raw = this.storage.getItem(`${this.keyPrefix}${roomId}`);
+    if (raw === null) return undefined;
+    const parsed = Number(raw);
+    if (!Number.isSafeInteger(parsed) || parsed < 0) {
+      return undefined;
+    }
+    return parsed;
+  }
+
+  setLastSequence(roomId: string, sequence: number): void {
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new RangeError(`Invalid sequence number: ${sequence}`);
+    }
+    this.storage.setItem(`${this.keyPrefix}${roomId}`, String(sequence));
+  }
+}
+
 /**
  * Client-side per-room ordering, gap detection, duplicate suppression, and
- * reconnect state tracker.
+ * reconnect state tracker. Optionally persists `lastProcessedSequence` via `SequenceStore`.
  */
 export class RoomSequenceTracker<T extends SequencedMessage> {
   private lastProcessedSequence: number;
   private readonly pendingBuffer = new Map<number, T>();
+  private readonly persistence?: { roomId: string; store: SequenceStore };
 
-  constructor(initialLastSequence = 0) {
-    if (!Number.isSafeInteger(initialLastSequence) || initialLastSequence < 0) {
+  constructor(initialLastSequence = 0, persistence?: { roomId: string; store: SequenceStore }) {
+    const persisted = persistence?.store.getLastSequence(persistence.roomId);
+    const startingSeq = persisted !== undefined ? persisted : initialLastSequence;
+    if (!Number.isSafeInteger(startingSeq) || startingSeq < 0) {
       throw new RangeError('initialLastSequence must be a non-negative safe integer');
     }
-    this.lastProcessedSequence = initialLastSequence;
+    this.lastProcessedSequence = startingSeq;
+    this.persistence = persistence;
+  }
+
+  private persistSequence(): void {
+    if (this.persistence) {
+      this.persistence.store.setLastSequence(this.persistence.roomId, this.lastProcessedSequence);
+    }
   }
 
   getLastProcessedSequence(): number {
@@ -85,6 +159,8 @@ export class RoomSequenceTracker<T extends SequencedMessage> {
       }
       this.lastProcessedSequence = nextSeq;
     }
+
+    this.persistSequence();
 
     const stillHasGap = this.pendingBuffer.size > 0;
     return {

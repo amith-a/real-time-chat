@@ -2,6 +2,8 @@
 
 ```text
 .
+├── client/
+│   └── room-sync.ts                    # Client-side ordering, gap detection & persistence
 ├── docs/                               # Architecture, data model & benchmark docs
 │   ├── access-pattern.md               # Single-table access patterns
 │   ├── dynamodb-implementation-guidelines.md

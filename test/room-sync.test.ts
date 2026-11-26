@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  InMemorySequenceStore,
+  type KeyValueStorage,
+  LocalStorageSequenceStore,
   PROACTIVE_RECONNECT_MS,
   RoomSequenceTracker,
   shouldProactivelyReconnect,
   WEBSOCKET_MAX_CONNECTION_MS,
-} from '../src/shared';
+} from '../client/room-sync';
 
 interface TestMsg {
   sequenceNumber: number;
@@ -93,5 +96,59 @@ describe('Phase 11 Client RoomSequenceTracker & Reconnection', () => {
     expect(recovery.duplicateCount).toBe(2); // 184 and buffered 187
     expect(recovery.hasRemainingGap).toBe(false);
     expect(tracker.getLastProcessedSequence()).toBe(187);
+  });
+
+  it('persists and restores lastProcessedSequence across tracker restarts via SequenceStore', () => {
+    const store = new InMemorySequenceStore();
+    const t1 = new RoomSequenceTracker<TestMsg>(0, { roomId: 'room-persist', store });
+    t1.ingest({ sequenceNumber: 1, body: 'm1' });
+    t1.ingest({ sequenceNumber: 2, body: 'm2' });
+    expect(store.getLastSequence('room-persist')).toBe(2);
+
+    // Simulated restart: new tracker restores 2 from store
+    const t2 = new RoomSequenceTracker<TestMsg>(0, { roomId: 'room-persist', store });
+    expect(t2.getLastProcessedSequence()).toBe(2);
+    expect(t2.ingest({ sequenceNumber: 2, body: 'm2-dup' }).duplicate).toBe(true);
+    expect(t2.ingest({ sequenceNumber: 3, body: 'm3' }).delivered).toHaveLength(1);
+    expect(store.getLastSequence('room-persist')).toBe(3);
+  });
+
+  it('persists and restores lastProcessedSequence across page refreshes via LocalStorageSequenceStore', () => {
+    const backing = new Map<string, string>();
+    const mockLocalStorage: KeyValueStorage = {
+      getItem: (key) => backing.get(key) ?? null,
+      setItem: (key, val) => {
+        backing.set(key, val);
+      },
+    };
+
+    // Session 1: processes seq 1 and 2
+    const store1 = new LocalStorageSequenceStore(mockLocalStorage);
+    const tracker1 = new RoomSequenceTracker<TestMsg>(0, {
+      roomId: 'room-browser',
+      store: store1,
+    });
+    tracker1.ingest({ sequenceNumber: 1, body: 'hello' });
+    tracker1.ingest({ sequenceNumber: 2, body: 'world' });
+    expect(backing.get('rtc:lastSeq:room-browser')).toBe('2');
+
+    // Page refresh: new store + tracker instance restores seq 2 from localStorage
+    const store2 = new LocalStorageSequenceStore(mockLocalStorage);
+    const tracker2 = new RoomSequenceTracker<TestMsg>(0, {
+      roomId: 'room-browser',
+      store: store2,
+    });
+    expect(tracker2.getLastProcessedSequence()).toBe(2);
+
+    // Reconnect recovery applies 3 and 4, ignoring duplicate 2
+    const recovery = tracker2.applyRecovery([
+      { sequenceNumber: 2, body: 'world' },
+      { sequenceNumber: 3, body: 'after-refresh' },
+      { sequenceNumber: 4, body: 'latest' },
+    ]);
+    expect(recovery.delivered.map((m) => m.sequenceNumber)).toEqual([3, 4]);
+    expect(recovery.duplicateCount).toBe(1);
+    expect(tracker2.getLastProcessedSequence()).toBe(4);
+    expect(backing.get('rtc:lastSeq:room-browser')).toBe('4');
   });
 });

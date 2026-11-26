@@ -113,7 +113,7 @@ export interface ResumedRoomMessages {
     roomId: string;
     sequenceNumber: number;
     senderId: string;
-    content: string;
+    body: string;
     messageType: 'TEXT' | 'IMAGE' | 'FILE';
     createdAt: string;
   }>;

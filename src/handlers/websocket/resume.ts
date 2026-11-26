@@ -69,7 +69,7 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
           roomId: m.roomId,
           sequenceNumber: m.sequenceNumber,
           senderId: m.senderId,
-          content: m.content,
+          body: m.content,
           messageType: m.messageType,
           createdAt: m.createdAt,
         }));

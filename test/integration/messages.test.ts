@@ -174,4 +174,48 @@ describe('messages (DynamoDB Local)', () => {
       expect((item as unknown as { role?: string }).role).toBeUndefined();
     }
   });
+
+  it('listMessagesAfter paginates in ascending sequence order without skipping or duplicating', async () => {
+    const roomId = `room-after-page-${Date.now()}`;
+    await getDocClient().send(
+      new PutCommand({
+        TableName: getTableName(),
+        Item: { PK: `ROOM#${roomId}`, SK: 'META', roomId, roomType: 'GROUP' },
+      }),
+    );
+    await getDocClient().send(
+      new PutCommand({
+        TableName: getTableName(),
+        Item: { PK: `ROOM#${roomId}`, SK: 'COUNTER', sequenceNumber: 0 },
+      }),
+    );
+
+    for (let i = 1; i <= 5; i++) {
+      await createMessage({
+        roomId,
+        senderId: 'u-page',
+        clientMessageId: `msg-${i}`,
+        content: `message-${i}`,
+      });
+    }
+
+    const page1 = await listMessagesAfter(roomId, 1, { limit: 2 });
+    expect(page1.items.map((m) => m.sequenceNumber)).toEqual([2, 3]);
+    expect(page1.nextKey).toBeDefined();
+    for (const item of page1.items) {
+      expect(item.SK.startsWith('MSG#')).toBe(true);
+    }
+
+    const page2 = await listMessagesAfter(roomId, 1, { limit: 2, startKey: page1.nextKey });
+    expect(page2.items.map((m) => m.sequenceNumber)).toEqual([4, 5]);
+    for (const item of page2.items) {
+      expect(item.SK.startsWith('MSG#')).toBe(true);
+    }
+
+    if (page2.nextKey) {
+      const page3 = await listMessagesAfter(roomId, 1, { limit: 2, startKey: page2.nextKey });
+      expect(page3.items).toEqual([]);
+      expect(page3.nextKey).toBeUndefined();
+    }
+  });
 });
