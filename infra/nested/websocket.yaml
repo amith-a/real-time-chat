@@ -37,49 +37,10 @@ Parameters:
     Type: String
 
 Resources:
-  AuthorizerLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-authorizer"
-      RetentionInDays: 3
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
 
-  AuthorizerExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${ParentStackName}-authorizer-role"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
-
-  AuthorizerFunction:
-    Type: AWS::Lambda::Function
-    DependsOn:
-      - AuthorizerLogGroup
-      - AuthorizerLoggingPolicy
-    Properties:
-      FunctionName: !Sub "${ParentStackName}-authorizer"
-      Runtime: nodejs22.x
-      Handler: authorizer.handler
-      Timeout: 10
-      Role: !GetAtt AuthorizerExecutionRole.Arn
-      Code:
-        S3Bucket: !Ref ArtifactBucketName
-        S3Key: !Ref AuthorizerArtifactKey
-      Environment:
-        Variables:
-          USER_POOL_ID:
-            Fn::ImportValue: !Sub "${Environment}-chat-user-pool-id"
-          USER_POOL_CLIENT_ID:
-            Fn::ImportValue: !Sub "${Environment}-chat-user-pool-client-id"
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
+  # =========================================================================
+  # WebSocket API, Deployment & Stage
+  # =========================================================================
 
   WebSocketApi:
     Type: AWS::ApiGatewayV2::Api
@@ -110,274 +71,6 @@ Resources:
         - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/authorizers/${AuthorizerId}"
         - ApiId: !Ref WebSocketApi
           AuthorizerId: !Ref WebSocketAuthorizer
-
-  ConnectExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${ParentStackName}-connect-role"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
-
-  ConnectLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-connect"
-      RetentionInDays: 3
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
-
-  ConnectFunction:
-    Type: AWS::Lambda::Function
-    DependsOn:
-      - ConnectLogGroup
-      - ConnectLoggingPolicy
-      - ConnectDynamoDBPolicy
-      - ConnectManageConnectionsPolicy
-    Properties:
-      FunctionName: !Sub "${ParentStackName}-connect"
-      Runtime: nodejs22.x
-      Handler: connect.handler
-      Timeout: 10
-      Role: !GetAtt ConnectExecutionRole.Arn
-      Code:
-        S3Bucket: !Ref ArtifactBucketName
-        S3Key: !Ref ConnectArtifactKey
-      Environment:
-        Variables:
-          TABLE_NAME:
-            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
-          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
-
-  ConnectIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref WebSocketApi
-      IntegrationType: AWS_PROXY
-      IntegrationMethod: POST
-      IntegrationUri: !Sub
-        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
-        - FunctionArn: !GetAtt ConnectFunction.Arn
-
-  DisconnectIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref WebSocketApi
-      IntegrationType: AWS_PROXY
-      IntegrationMethod: POST
-      IntegrationUri: !Sub
-        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
-        - FunctionArn: !GetAtt DisconnectFunction.Arn
-
-  DefaultIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref WebSocketApi
-      IntegrationType: AWS_PROXY
-      IntegrationMethod: POST
-      IntegrationUri: !Sub
-        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
-        - FunctionArn: !GetAtt DefaultFunction.Arn
-
-  SendMessageIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref WebSocketApi
-      IntegrationType: AWS_PROXY
-      IntegrationMethod: POST
-      IntegrationUri: !Sub
-        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
-        - FunctionArn: !GetAtt SendMessageFunction.Arn
-
-  ConnectInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt ConnectFunction.Arn
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub
-        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$connect"
-        - ApiId: !Ref WebSocketApi
-
-  DisconnectInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt DisconnectFunction.Arn
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub
-        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$disconnect"
-        - ApiId: !Ref WebSocketApi
-
-  DefaultInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt DefaultFunction.Arn
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub
-        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$default"
-        - ApiId: !Ref WebSocketApi
-
-  SendMessageInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt SendMessageFunction.Arn
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub
-        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/sendMessage"
-        - ApiId: !Ref WebSocketApi
-
-  ConnectRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteKey: "$connect"
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref WebSocketAuthorizer
-      Target: !Sub "integrations/${ConnectIntegration}"
-
-  DisconnectRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteKey: "$disconnect"
-      AuthorizationType: NONE
-      Target: !Sub "integrations/${DisconnectIntegration}"
-
-  DefaultRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteKey: "$default"
-      AuthorizationType: NONE
-      Target: !Sub "integrations/${DefaultIntegration}"
-
-  SendMessageRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteKey: "sendMessage"
-      AuthorizationType: NONE
-      Target: !Sub "integrations/${SendMessageIntegration}"
-      RouteResponseSelectionExpression: "$default" 
-
-  SendMessageRouteResponse:
-    Type: AWS::ApiGatewayV2::RouteResponse
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteId: !Ref SendMessageRoute
-      RouteResponseKey: "$default"
-
-  HeartbeatIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref WebSocketApi
-      IntegrationType: AWS_PROXY
-      IntegrationMethod: POST
-      IntegrationUri: !Sub
-        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
-        - FunctionArn: !GetAtt HeartbeatFunction.Arn
-
-  HeartbeatInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt HeartbeatFunction.Arn
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/heartbeat"
-
-  HeartbeatRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteKey: "heartbeat"
-      AuthorizationType: NONE
-      Target: !Sub "integrations/${HeartbeatIntegration}"
-      RouteResponseSelectionExpression: "$default"
-
-  HeartbeatRouteResponse:
-    Type: AWS::ApiGatewayV2::RouteResponse
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteId: !Ref HeartbeatRoute
-      RouteResponseKey: "$default"
-
-  TypingIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref WebSocketApi
-      IntegrationType: AWS_PROXY
-      IntegrationMethod: POST
-      IntegrationUri: !Sub
-        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
-        - FunctionArn: !GetAtt TypingFunction.Arn
-
-  TypingInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt TypingFunction.Arn
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/typing"
-
-  TypingRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteKey: "typing"
-      AuthorizationType: NONE
-      Target: !Sub "integrations/${TypingIntegration}"
-      RouteResponseSelectionExpression: "$default"
-
-  TypingRouteResponse:
-    Type: AWS::ApiGatewayV2::RouteResponse
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteId: !Ref TypingRoute
-      RouteResponseKey: "$default"
-
-  ResumeIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref WebSocketApi
-      IntegrationType: AWS_PROXY
-      IntegrationMethod: POST
-      IntegrationUri: !Sub
-        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
-        - FunctionArn: !GetAtt ResumeFunction.Arn
-
-  ResumeInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt ResumeFunction.Arn
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/resume"
-
-  ResumeRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteKey: "resume"
-      AuthorizationType: NONE
-      Target: !Sub "integrations/${ResumeIntegration}"
-      RouteResponseSelectionExpression: "$default"
-
-  ResumeRouteResponse:
-    Type: AWS::ApiGatewayV2::RouteResponse
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteId: !Ref ResumeRoute
-      RouteResponseKey: "$default"
 
   WebSocketDeploymentV5:
     Type: AWS::ApiGatewayV2::Deployment
@@ -419,139 +112,30 @@ Resources:
       StageName: !Ref Environment
       DeploymentId: !Ref WebSocketDeploymentV5
 
-  DisconnectLogGroup:
+  # =========================================================================
+  # Authorizer Lambda
+  # =========================================================================
+
+  AuthorizerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-disconnect"
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-authorizer"
       RetentionInDays: 3
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
 
-  DisconnectExecutionRole:
+  AuthorizerExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${ParentStackName}-disconnect-role"
+      RoleName: !Sub "${ParentStackName}-authorizer-role"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
               Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-
-  DisconnectFunction:
-    Type: AWS::Lambda::Function
-    DependsOn:
-      - DisconnectLogGroup
-      - DisconnectLoggingPolicy
-      - DisconnectDynamoDBPolicy
-      - DisconnectManageConnectionsPolicy
-    Properties:
-      FunctionName: !Sub "${ParentStackName}-disconnect"
-      Runtime: nodejs22.x
-      Handler: disconnect.handler
-      Timeout: 10
-      Role: !GetAtt DisconnectExecutionRole.Arn
-      Code:
-        S3Bucket: !Ref ArtifactBucketName
-        S3Key: !Ref DisconnectArtifactKey
-      Environment:
-        Variables:
-          TABLE_NAME:
-            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
-          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
-
-  DefaultLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-default"
-      RetentionInDays: 3
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
-
-  DefaultExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${ParentStackName}-default-role"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-
-  DefaultFunction:
-    Type: AWS::Lambda::Function
-    DependsOn:
-      - DefaultLogGroup
-      - DefaultLoggingPolicy
-      - DefaultDynamoDBPolicy
-      - DefaultManageConnectionsPolicy
-    Properties:
-      FunctionName: !Sub "${ParentStackName}-default"
-      Runtime: nodejs22.x
-      Handler: default.handler
-      Timeout: 20
-      Role: !GetAtt DefaultExecutionRole.Arn
-      Code:
-        S3Bucket: !Ref ArtifactBucketName
-        S3Key: !Ref DefaultArtifactKey
-      Environment:
-        Variables:
-          TABLE_NAME:
-            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
-          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
-
-  SendMessageLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-send-message"
-      RetentionInDays: 3
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
-
-  SendMessageExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${ParentStackName}-send-message-role"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-
-  SendMessageFunction:
-    Type: AWS::Lambda::Function
-    DependsOn:
-      - SendMessageLogGroup
-      - SendMessageLoggingPolicy
-      - SendMessageDynamoDBPolicy
-      - SendMessageManageConnectionsPolicy
-      - SendMessageSqsPolicy
-    Properties:
-      FunctionName: !Sub "${ParentStackName}-send-message"
-      Runtime: nodejs22.x
-      Handler: sendMessage.handler
-      Timeout: 20
-      Role: !GetAtt SendMessageExecutionRole.Arn
-      Code:
-        S3Bucket: !Ref ArtifactBucketName
-        S3Key: !Ref SendMessageArtifactKey
-      Environment:
-        Variables:
-          TABLE_NAME:
-            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
-          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
-          FANOUT_RETRY_QUEUE_URL: !Ref FanoutRetryQueue
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
+            Action:
+              - sts:AssumeRole
 
   AuthorizerLoggingPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -569,6 +153,54 @@ Resources:
             Resource:
               - !GetAtt AuthorizerLogGroup.Arn
               - !Sub "${AuthorizerLogGroup.Arn}:*"
+
+  AuthorizerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - AuthorizerLogGroup
+      - AuthorizerLoggingPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-authorizer"
+      Runtime: nodejs22.x
+      Handler: authorizer.handler
+      Timeout: 10
+      Role: !GetAtt AuthorizerExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref AuthorizerArtifactKey
+      Environment:
+        Variables:
+          USER_POOL_ID:
+            Fn::ImportValue: !Sub "${Environment}-chat-user-pool-id"
+          USER_POOL_CLIENT_ID:
+            Fn::ImportValue: !Sub "${Environment}-chat-user-pool-client-id"
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  # =========================================================================
+  # Connect Route & Lambda
+  # =========================================================================
+
+  ConnectLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-connect"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  ConnectExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ParentStackName}-connect-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
 
   ConnectLoggingPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -622,6 +254,83 @@ Resources:
             Resource:
               - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
 
+  ConnectFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - ConnectLogGroup
+      - ConnectLoggingPolicy
+      - ConnectDynamoDBPolicy
+      - ConnectManageConnectionsPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-connect"
+      Runtime: nodejs22.x
+      Handler: connect.handler
+      Timeout: 10
+      Role: !GetAtt ConnectExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref ConnectArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt ConnectFunction.Arn
+
+  ConnectInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ConnectFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$connect"
+        - ApiId: !Ref WebSocketApi
+
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "$connect"
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref WebSocketAuthorizer
+      Target: !Sub "integrations/${ConnectIntegration}"
+
+  # =========================================================================
+  # Disconnect Route & Lambda
+  # =========================================================================
+
+  DisconnectLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-disconnect"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  DisconnectExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ParentStackName}-disconnect-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
   DisconnectLoggingPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -672,6 +381,82 @@ Resources:
               - execute-api:ManageConnections
             Resource:
               - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
+
+  DisconnectFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - DisconnectLogGroup
+      - DisconnectLoggingPolicy
+      - DisconnectDynamoDBPolicy
+      - DisconnectManageConnectionsPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-disconnect"
+      Runtime: nodejs22.x
+      Handler: disconnect.handler
+      Timeout: 10
+      Role: !GetAtt DisconnectExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref DisconnectArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt DisconnectFunction.Arn
+
+  DisconnectInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt DisconnectFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$disconnect"
+        - ApiId: !Ref WebSocketApi
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "$disconnect"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${DisconnectIntegration}"
+
+  # =========================================================================
+  # Default Route & Lambda
+  # =========================================================================
+
+  DefaultLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-default"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  DefaultExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ParentStackName}-default-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
 
   DefaultLoggingPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -725,6 +510,82 @@ Resources:
             Resource:
               - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
 
+  DefaultFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - DefaultLogGroup
+      - DefaultLoggingPolicy
+      - DefaultDynamoDBPolicy
+      - DefaultManageConnectionsPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-default"
+      Runtime: nodejs22.x
+      Handler: default.handler
+      Timeout: 20
+      Role: !GetAtt DefaultExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref DefaultArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  DefaultIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt DefaultFunction.Arn
+
+  DefaultInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt DefaultFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/$default"
+        - ApiId: !Ref WebSocketApi
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "$default"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${DefaultIntegration}"
+
+  # =========================================================================
+  # SendMessage Route & Lambda
+  # =========================================================================
+
+  SendMessageLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-send-message"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  SendMessageExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ParentStackName}-send-message-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
   SendMessageLoggingPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -776,6 +637,87 @@ Resources:
               - execute-api:ManageConnections
             Resource:
               - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
+
+  SendMessageSqsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-send-message-sqs"
+      Roles:
+        - !Ref SendMessageExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource:
+              - !GetAtt FanoutRetryQueue.Arn
+
+  SendMessageFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - SendMessageLogGroup
+      - SendMessageLoggingPolicy
+      - SendMessageDynamoDBPolicy
+      - SendMessageManageConnectionsPolicy
+      - SendMessageSqsPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-send-message"
+      Runtime: nodejs22.x
+      Handler: sendMessage.handler
+      Timeout: 20
+      Role: !GetAtt SendMessageExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref SendMessageArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+          FANOUT_RETRY_QUEUE_URL: !Ref FanoutRetryQueue
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  SendMessageIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt SendMessageFunction.Arn
+
+  SendMessageInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt SendMessageFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/sendMessage"
+        - ApiId: !Ref WebSocketApi
+
+  SendMessageRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "sendMessage"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${SendMessageIntegration}"
+      RouteResponseSelectionExpression: "$default"
+
+  SendMessageRouteResponse:
+    Type: AWS::ApiGatewayV2::RouteResponse
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteId: !Ref SendMessageRoute
+      RouteResponseKey: "$default"
+
+  # =========================================================================
+  # Heartbeat Route & Lambda
+  # =========================================================================
 
   HeartbeatLogGroup:
     Type: AWS::Logs::LogGroup
@@ -851,6 +793,44 @@ Resources:
             Fn::ImportValue: !Sub "${Environment}-chat-table-name"
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
+
+  HeartbeatIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt HeartbeatFunction.Arn
+
+  HeartbeatInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt HeartbeatFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/heartbeat"
+
+  HeartbeatRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "heartbeat"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${HeartbeatIntegration}"
+      RouteResponseSelectionExpression: "$default"
+
+  HeartbeatRouteResponse:
+    Type: AWS::ApiGatewayV2::RouteResponse
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteId: !Ref HeartbeatRoute
+      RouteResponseKey: "$default"
+
+  # =========================================================================
+  # Typing Route & Lambda
+  # =========================================================================
 
   TypingLogGroup:
     Type: AWS::Logs::LogGroup
@@ -946,6 +926,157 @@ Resources:
           API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
+
+  TypingIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt TypingFunction.Arn
+
+  TypingInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt TypingFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/typing"
+
+  TypingRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "typing"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${TypingIntegration}"
+      RouteResponseSelectionExpression: "$default"
+
+  TypingRouteResponse:
+    Type: AWS::ApiGatewayV2::RouteResponse
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteId: !Ref TypingRoute
+      RouteResponseKey: "$default"
+
+  # =========================================================================
+  # Resume Route & Lambda
+  # =========================================================================
+
+  ResumeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-resume"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  ResumeExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ParentStackName}-resume-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  ResumeLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-resume-logging"
+      Roles:
+        - !Ref ResumeExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt ResumeLogGroup.Arn
+              - !Sub "${ResumeLogGroup.Arn}:*"
+
+  ResumeDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-resume-dynamodb"
+      Roles:
+        - !Ref ResumeExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+            Resource:
+              - Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+
+  ResumeFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - ResumeLogGroup
+      - ResumeLoggingPolicy
+      - ResumeDynamoDBPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-resume"
+      Runtime: nodejs22.x
+      Handler: resume.handler
+      Timeout: 15
+      Role: !GetAtt ResumeExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref ResumeArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  ResumeIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt ResumeFunction.Arn
+
+  ResumeInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ResumeFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/resume"
+
+  ResumeRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "resume"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${ResumeIntegration}"
+      RouteResponseSelectionExpression: "$default"
+
+  ResumeRouteResponse:
+    Type: AWS::ApiGatewayV2::RouteResponse
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteId: !Ref ResumeRoute
+      RouteResponseKey: "$default"
+
+  # =========================================================================
+  # Scheduled Sweeper Lambda
+  # =========================================================================
 
   SweeperLogGroup:
     Type: AWS::Logs::LogGroup
@@ -1063,80 +1194,9 @@ Resources:
       Principal: events.amazonaws.com
       SourceArn: !GetAtt SweeperScheduleRule.Arn
 
-  ResumeLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-resume"
-      RetentionInDays: 3
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
-
-  ResumeExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${ParentStackName}-resume-role"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-
-  ResumeLoggingPolicy:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      ManagedPolicyName: !Sub "${ParentStackName}-resume-logging"
-      Roles:
-        - !Ref ResumeExecutionRole
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Action:
-              - logs:CreateLogStream
-              - logs:PutLogEvents
-            Resource:
-              - !GetAtt ResumeLogGroup.Arn
-              - !Sub "${ResumeLogGroup.Arn}:*"
-
-  ResumeDynamoDBPolicy:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      ManagedPolicyName: !Sub "${ParentStackName}-resume-dynamodb"
-      Roles:
-        - !Ref ResumeExecutionRole
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Action:
-              - dynamodb:GetItem
-              - dynamodb:Query
-            Resource:
-              - Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
-
-  ResumeFunction:
-    Type: AWS::Lambda::Function
-    DependsOn:
-      - ResumeLogGroup
-      - ResumeLoggingPolicy
-      - ResumeDynamoDBPolicy
-    Properties:
-      FunctionName: !Sub "${ParentStackName}-resume"
-      Runtime: nodejs22.x
-      Handler: resume.handler
-      Timeout: 15
-      Role: !GetAtt ResumeExecutionRole.Arn
-      Code:
-        S3Bucket: !Ref ArtifactBucketName
-        S3Key: !Ref ResumeArtifactKey
-      Environment:
-        Variables:
-          TABLE_NAME:
-            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
+  # =========================================================================
+  # SQS Fan-out Retry Queue, DLQ, Worker & Replay
+  # =========================================================================
 
   FanoutRetryDLQ:
     Type: AWS::SQS::Queue
@@ -1157,21 +1217,6 @@ Resources:
         maxReceiveCount: 3
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
-
-  SendMessageSqsPolicy:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      ManagedPolicyName: !Sub "${ParentStackName}-send-message-sqs"
-      Roles:
-        - !Ref SendMessageExecutionRole
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Action:
-              - sqs:SendMessage
-            Resource:
-              - !GetAtt FanoutRetryQueue.Arn
 
   FanoutRetryLogGroup:
     Type: AWS::Logs::LogGroup
