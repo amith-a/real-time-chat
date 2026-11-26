@@ -236,11 +236,12 @@ async function main() {
     console.log('Note: Inspect CloudWatch Logs for sendMessage Lambda to view internal');
     console.log('      DynamoDB query counts and backend deliveryDurationMs.');
 
+    const dateNow = new Date().toISOString();
     const outputFlagIndex = args.indexOf('--output');
     const outputArg =
       outputFlagIndex !== -1 && args[outputFlagIndex + 1] ? args[outputFlagIndex + 1] : undefined;
     const outputPath =
-      outputArg || process.env.OUTPUT_JSON || `.local/benchmarks/fanout-${runId}.json`;
+      outputArg || process.env.OUTPUT_JSON || `.local/benchmarks/fanout-${runId}-${dateNow}.json`;
 
     const report = {
       timestamp: new Date().toISOString(),

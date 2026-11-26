@@ -23,6 +23,12 @@ Parameters:
     Type: String
   SendMessageArtifactKey:
     Type: String
+  HeartbeatArtifactKey:
+    Type: String
+  TypingArtifactKey:
+    Type: String
+  SweeperArtifactKey:
+    Type: String
 
 Resources:
   AuthorizerLogGroup:
@@ -126,6 +132,7 @@ Resources:
       - ConnectLogGroup
       - ConnectLoggingPolicy
       - ConnectDynamoDBPolicy
+      - ConnectManageConnectionsPolicy
     Properties:
       FunctionName: !Sub "${ParentStackName}-connect"
       Runtime: nodejs22.x
@@ -139,6 +146,7 @@ Resources:
         Variables:
           TABLE_NAME:
             Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
 
@@ -263,7 +271,75 @@ Resources:
       RouteId: !Ref SendMessageRoute
       RouteResponseKey: "$default"
 
-  WebSocketDeploymentV3:
+  HeartbeatIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt HeartbeatFunction.Arn
+
+  HeartbeatInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt HeartbeatFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/heartbeat"
+
+  HeartbeatRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "heartbeat"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${HeartbeatIntegration}"
+      RouteResponseSelectionExpression: "$default"
+
+  HeartbeatRouteResponse:
+    Type: AWS::ApiGatewayV2::RouteResponse
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteId: !Ref HeartbeatRoute
+      RouteResponseKey: "$default"
+
+  TypingIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+        - FunctionArn: !GetAtt TypingFunction.Arn
+
+  TypingInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt TypingFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/typing"
+
+  TypingRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "typing"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${TypingIntegration}"
+      RouteResponseSelectionExpression: "$default"
+
+  TypingRouteResponse:
+    Type: AWS::ApiGatewayV2::RouteResponse
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteId: !Ref TypingRoute
+      RouteResponseKey: "$default"
+
+  WebSocketDeploymentV4:
     Type: AWS::ApiGatewayV2::Deployment
     DependsOn:
       - ConnectRoute
@@ -279,16 +355,25 @@ Resources:
       - SendMessageIntegration
       - SendMessageInvokePermission
       - SendMessageRouteResponse
+      - HeartbeatRoute
+      - HeartbeatIntegration
+      - HeartbeatInvokePermission
+      - HeartbeatRouteResponse
+      - TypingRoute
+      - TypingIntegration
+      - TypingInvokePermission
+      - TypingRouteResponse
+      - AuthorizerInvokePermission
     Properties:
       ApiId: !Ref WebSocketApi
-      Description: "WebSocket API deployment v2"
+      Description: "WebSocket API deployment v4 (heartbeat & typing routes)"
 
   WebSocketStage:
     Type: AWS::ApiGatewayV2::Stage
     Properties:
       ApiId: !Ref WebSocketApi
       StageName: !Ref Environment
-      DeploymentId: !Ref WebSocketDeploymentV3
+      DeploymentId: !Ref WebSocketDeploymentV4
 
   DisconnectLogGroup:
     Type: AWS::Logs::LogGroup
@@ -316,6 +401,7 @@ Resources:
       - DisconnectLogGroup
       - DisconnectLoggingPolicy
       - DisconnectDynamoDBPolicy
+      - DisconnectManageConnectionsPolicy
     Properties:
       FunctionName: !Sub "${ParentStackName}-disconnect"
       Runtime: nodejs22.x
@@ -329,6 +415,7 @@ Resources:
         Variables:
           TABLE_NAME:
             Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
 
@@ -466,10 +553,27 @@ Resources:
           - Effect: Allow
             Action:
               - dynamodb:GetItem
+              - dynamodb:Query
               - dynamodb:PutItem
               - dynamodb:UpdateItem
             Resource:
               - Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+              - Fn::ImportValue: !Sub "${Environment}-chat-table-index-arn"
+
+  ConnectManageConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-connect-manage-connections"
+      Roles:
+        - !Ref ConnectExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - execute-api:ManageConnections
+            Resource:
+              - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
 
   DisconnectLoggingPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -500,10 +604,27 @@ Resources:
           - Effect: Allow
             Action:
               - dynamodb:GetItem
+              - dynamodb:Query
               - dynamodb:UpdateItem
               - dynamodb:DeleteItem
             Resource:
               - Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+              - Fn::ImportValue: !Sub "${Environment}-chat-table-index-arn"
+
+  DisconnectManageConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-disconnect-manage-connections"
+      Roles:
+        - !Ref DisconnectExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - execute-api:ManageConnections
+            Resource:
+              - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
 
   DefaultLoggingPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -608,6 +729,292 @@ Resources:
               - execute-api:ManageConnections
             Resource:
               - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
+
+  HeartbeatLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-heartbeat"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  HeartbeatExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ParentStackName}-heartbeat-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  HeartbeatLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-heartbeat-logging"
+      Roles:
+        - !Ref HeartbeatExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt HeartbeatLogGroup.Arn
+              - !Sub "${HeartbeatLogGroup.Arn}:*"
+
+  HeartbeatDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-heartbeat-dynamodb"
+      Roles:
+        - !Ref HeartbeatExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:UpdateItem
+            Resource:
+              - Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+
+  HeartbeatFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - HeartbeatLogGroup
+      - HeartbeatLoggingPolicy
+      - HeartbeatDynamoDBPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-heartbeat"
+      Runtime: nodejs22.x
+      Handler: heartbeat.handler
+      Timeout: 10
+      Role: !GetAtt HeartbeatExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref HeartbeatArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  TypingLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-typing"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  TypingExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ParentStackName}-typing-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  TypingLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-typing-logging"
+      Roles:
+        - !Ref TypingExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt TypingLogGroup.Arn
+              - !Sub "${TypingLogGroup.Arn}:*"
+
+  TypingDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-typing-dynamodb"
+      Roles:
+        - !Ref TypingExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+              - dynamodb:DeleteItem
+              - dynamodb:UpdateItem
+            Resource:
+              - Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+              - Fn::ImportValue: !Sub "${Environment}-chat-table-index-arn"
+
+  TypingManageConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-typing-manage-connections"
+      Roles:
+        - !Ref TypingExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - execute-api:ManageConnections
+            Resource:
+              - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
+
+  TypingFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - TypingLogGroup
+      - TypingLoggingPolicy
+      - TypingDynamoDBPolicy
+      - TypingManageConnectionsPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-typing"
+      Runtime: nodejs22.x
+      Handler: typing.handler
+      Timeout: 15
+      Role: !GetAtt TypingExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref TypingArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  SweeperLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ParentStackName}-sweeper"
+      RetentionInDays: 3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  SweeperExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ParentStackName}-sweeper-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  SweeperLoggingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-sweeper-logging"
+      Roles:
+        - !Ref SweeperExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt SweeperLogGroup.Arn
+              - !Sub "${SweeperLogGroup.Arn}:*"
+
+  SweeperDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-sweeper-dynamodb"
+      Roles:
+        - !Ref SweeperExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:Scan
+              - dynamodb:GetItem
+              - dynamodb:Query
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+            Resource:
+              - Fn::ImportValue: !Sub "${Environment}-chat-table-arn"
+              - Fn::ImportValue: !Sub "${Environment}-chat-table-index-arn"
+
+  SweeperManageConnectionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ParentStackName}-sweeper-manage-connections"
+      Roles:
+        - !Ref SweeperExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - execute-api:ManageConnections
+            Resource:
+              - !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Environment}/POST/@connections/*"
+
+  SweeperFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - SweeperLogGroup
+      - SweeperLoggingPolicy
+      - SweeperDynamoDBPolicy
+      - SweeperManageConnectionsPolicy
+    Properties:
+      FunctionName: !Sub "${ParentStackName}-sweeper"
+      Runtime: nodejs22.x
+      Handler: sweeper.handler
+      Timeout: 60
+      Role: !GetAtt SweeperExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref SweeperArtifactKey
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Fn::ImportValue: !Sub "${Environment}-chat-table-name"
+          API_GATEWAY_MANAGEMENT_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+          STALE_CONNECTION_TIMEOUT_MS: "180000"
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  SweeperScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ParentStackName}-sweeper-schedule"
+      Description: "Periodic stale connection and presence sweeper (5 minutes)"
+      ScheduleExpression: "rate(5 minutes)"
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt SweeperFunction.Arn
+          Id: SweeperLambdaTarget
+
+  SweeperInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt SweeperFunction.Arn
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SweeperScheduleRule.Arn
 
 Outputs:
   WebSocketApiId:

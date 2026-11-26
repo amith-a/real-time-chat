@@ -47,3 +47,45 @@ export interface MessageAckPayload {
   createdAt: string;
   isDuplicate: boolean;
 }
+
+export const heartbeatSchema = z.object({
+  action: z.literal('heartbeat'),
+});
+
+export type HeartbeatInput = z.infer<typeof heartbeatSchema>;
+
+export interface HeartbeatAckPayload {
+  action: 'heartbeatAck';
+  status: 'ok' | 'reconnect';
+  timestamp: string;
+  nextHeartbeatMs: number;
+}
+
+export const typingSchema = z.object({
+  action: z.literal('typing'),
+  roomId: z.string().trim().min(1, 'roomId is required'),
+  isTyping: z.boolean().default(true),
+});
+
+export type TypingInput = z.infer<typeof typingSchema>;
+
+export interface TypingBroadcastPayload {
+  action: 'typing';
+  roomId: string;
+  userId: string;
+  isTyping: boolean;
+  timestamp: string;
+}
+
+export interface TypingAckPayload {
+  action: 'typingAck';
+  roomId: string;
+  isTyping: boolean;
+}
+
+export interface PresenceBroadcastPayload {
+  action: 'presence';
+  userId: string;
+  status: 'online' | 'offline';
+  lastSeenAt: string;
+}

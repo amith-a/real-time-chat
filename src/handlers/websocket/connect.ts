@@ -1,6 +1,7 @@
 import type { APIGatewayProxyWebsocketHandlerV2 } from 'aws-lambda';
 import { ensureUserProfile, registerConnection } from '../../repositories';
 import {
+  broadcastPresenceChange,
   formatResponse,
   getAuthenticatedUser,
   getWebSocketContext,
@@ -35,6 +36,22 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
         connectionId,
         now,
       });
+
+      if (result.becameOnline && process.env.API_GATEWAY_MANAGEMENT_ENDPOINT) {
+        try {
+          await broadcastPresenceChange({
+            userId,
+            status: 'online',
+            lastSeenAt: now ?? new Date().toISOString(),
+            excludeConnectionId: connectionId,
+          });
+        } catch (presenceError) {
+          log.warn('Failed to broadcast online presence on $connect', {
+            userId,
+            error: presenceError instanceof Error ? presenceError.message : String(presenceError),
+          });
+        }
+      }
 
       log.info('WebSocket client connected', {
         userId,

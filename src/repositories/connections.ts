@@ -81,10 +81,14 @@ export async function getConnectionOwner(connectionId: string): Promise<string |
 export interface RegisterResult {
   /** True if this call created the connection; false if it was already registered. */
   registered: boolean;
+  /** True only for the single atomic 0 -> 1 transition that brings the user online. */
+  becameOnline?: boolean;
 }
 
 /**
  * AP3: create the connection and increment the presence counter atomically.
+ * Uses a conditional 0 -> 1 transition on PRESENCE so concurrent $connect invocations
+ * race-safely elect exactly one caller with `becameOnline: true`.
  * A duplicate $connect (the Put condition fails) has no effect on the counter and is treated as
  * success only after a consistent read confirms the same user owns the connection.
  */
@@ -105,7 +109,7 @@ export async function registerConnection(
     lastHeartbeat: now,
   };
 
-  const items = [
+  const buildItems = (expectOffline: boolean) => [
     {
       Put: { TableName: table, Item: connection, ConditionExpression: 'attribute_not_exists(PK)' },
     },
@@ -114,7 +118,10 @@ export async function registerConnection(
         TableName: table,
         Key: presenceKey(userId),
         UpdateExpression: 'ADD activeConnectionCount :one',
-        ExpressionAttributeValues: { ':one': 1 },
+        ConditionExpression: expectOffline
+          ? 'attribute_not_exists(activeConnectionCount) OR activeConnectionCount = :zero'
+          : 'activeConnectionCount > :zero',
+        ExpressionAttributeValues: { ':one': 1, ':zero': 0 },
       },
     },
     ...(withOwnerItem
@@ -130,39 +137,58 @@ export async function registerConnection(
       : []),
   ];
 
-  try {
-    await sendWithRetry(() =>
-      getDocClient().send(new TransactWriteCommand({ TransactItems: items })),
-    );
-    return { registered: true };
-  } catch (error) {
-    const reasons = cancellationReasons(error);
-    const duplicate =
-      isTransactionCanceled(error) &&
-      (conditionFailedAt(reasons, 0) || conditionFailedAt(reasons, 2));
-    if (!duplicate) throw error;
+  // Try 0 -> 1 first; if another concurrent $connect already incremented PRESENCE, fall back to > 0.
+  for (const expectOffline of [true, false]) {
+    try {
+      await sendWithRetry(() =>
+        getDocClient().send(new TransactWriteCommand({ TransactItems: buildItems(expectOffline) })),
+      );
+      return { registered: true, becameOnline: expectOffline };
+    } catch (error) {
+      const reasons = cancellationReasons(error);
+      const duplicate =
+        isTransactionCanceled(error) &&
+        (conditionFailedAt(reasons, 0) || conditionFailedAt(reasons, 2));
 
-    const existing = await getConnection(userId, connectionId, true);
-    if (withOwnerItem) {
-      const owner = await getConnectionOwner(connectionId);
-      if (owner !== undefined && owner !== userId) {
-        throw new ForbiddenError('Connection is registered to a different user', { connectionId });
+      if (duplicate) {
+        const existing = await getConnection(userId, connectionId, true);
+        if (withOwnerItem) {
+          const owner = await getConnectionOwner(connectionId);
+          if (owner !== undefined && owner !== userId) {
+            throw new ForbiddenError('Connection is registered to a different user', {
+              connectionId,
+            });
+          }
+          if (owner !== userId) {
+            throw new InternalServerError('Connection owner record is missing or inconsistent', {
+              userId,
+              connectionId,
+            });
+          }
+        }
+        if (!existing) {
+          throw new InternalServerError('Owner item exists without a connection item', {
+            userId,
+            connectionId,
+          });
+        }
+        return { registered: false, becameOnline: false };
       }
-      if (owner !== userId) {
-        throw new InternalServerError('Connection owner record is missing or inconsistent', {
-          userId,
-          connectionId,
-        });
+
+      // If 0 -> 1 lost the race because activeConnectionCount is already > 0, retry with > 0.
+      if (expectOffline && isTransactionCanceled(error) && conditionFailedAt(reasons, 1)) {
+        continue;
       }
+
+      throw error;
     }
-    if (!existing) {
-      throw new InternalServerError('Owner item exists without a connection item', {
-        userId,
-        connectionId,
-      });
-    }
-    return { registered: false };
   }
+
+  // Fallback if activeConnectionCount flipped back to 0 between attempts.
+  await sendWithRetry(() =>
+    getDocClient().send(new TransactWriteCommand({ TransactItems: buildItems(true) })),
+  );
+  return { registered: true, becameOnline: true };
 }
 
 export type RemoveResult =
@@ -297,13 +323,16 @@ export interface StaleCandidate {
 /**
  * AP17: paginated Scan for connections whose heartbeat is older than `cutoff`.
  * Yields one page of candidates at a time. The filter runs after items are read, so the cost
- * scales with the whole table (messages included). Measure it in Phase 14.
+ * scales with the whole table (messages included). Measure it in Phase 14; if table growth
+ * makes Scan RCUs significant, migrate to a sparse GSI2 (`GSI2PK = 'ACTIVE_CONN'`, `GSI2SK = lastHeartbeat`).
  */
 export async function* scanStaleConnections(
   cutoff: IsoTimestamp,
   batchSize?: number,
+  maxPages?: number,
 ): AsyncGenerator<StaleCandidate[]> {
   let startKey: Record<string, unknown> | undefined;
+  let pages = 0;
   do {
     const out = await getDocClient().send(
       new ScanCommand({
@@ -319,8 +348,9 @@ export async function* scanStaleConnections(
     if (items.length > 0) {
       yield items;
     }
+    pages++;
     startKey = out.LastEvaluatedKey;
-  } while (startKey);
+  } while (startKey && (maxPages === undefined || pages < maxPages));
 }
 
 /**

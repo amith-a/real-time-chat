@@ -46,10 +46,10 @@ describe('Disconnect Handler ($disconnect)', () => {
     });
   });
 
-  it('removes connection using authorizer userId when present and TABLE_NAME is set', async () => {
+  it('resolves connection owner via getConnectionOwner even when authorizer context is present', async () => {
     process.env.TABLE_NAME = 'mock-table';
     const removeSpy = vi.spyOn(repos, 'removeConnection').mockResolvedValueOnce('REMOVED');
-    const getOwnerSpy = vi.spyOn(repos, 'getConnectionOwner');
+    const getOwnerSpy = vi.spyOn(repos, 'getConnectionOwner').mockResolvedValueOnce('u-owner-1');
 
     const event = createMockEvent({
       connectionId: 'conn-auth',
@@ -59,11 +59,11 @@ describe('Disconnect Handler ($disconnect)', () => {
     const result = (await disconnectHandler(event, mockContext, mockCallback)) as ExpectedResponse;
 
     expect(result.statusCode).toBe(200);
+    expect(getOwnerSpy).toHaveBeenCalledWith('conn-auth');
     expect(removeSpy).toHaveBeenCalledWith({
-      userId: 'u-auth-1',
+      userId: 'u-owner-1',
       connectionId: 'conn-auth',
     });
-    expect(getOwnerSpy).not.toHaveBeenCalled();
   });
 
   it('resolves connection owner via repository when authorizer context is absent', async () => {

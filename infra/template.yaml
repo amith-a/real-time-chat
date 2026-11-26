@@ -34,6 +34,18 @@ Parameters:
     Type: String
     Description: S3 object key for sendMessage Lambda zip artifact
 
+  HeartbeatArtifactKey:
+    Type: String
+    Description: S3 object key for heartbeat Lambda zip artifact
+
+  TypingArtifactKey:
+    Type: String
+    Description: S3 object key for typing Lambda zip artifact
+
+  SweeperArtifactKey:
+    Type: String
+    Description: S3 object key for sweeper Lambda zip artifact
+
   UsersArtifactKey:
     Type: String
     Description: S3 object key for users Lambda zip artifact
@@ -60,6 +72,9 @@ Resources:
         DisconnectArtifactKey: !Ref DisconnectArtifactKey
         DefaultArtifactKey: !Ref DefaultArtifactKey
         SendMessageArtifactKey: !Ref SendMessageArtifactKey
+        HeartbeatArtifactKey: !Ref HeartbeatArtifactKey
+        TypingArtifactKey: !Ref TypingArtifactKey
+        SweeperArtifactKey: !Ref SweeperArtifactKey
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
 

@@ -1,8 +1,8 @@
 import type { APIGatewayProxyWebsocketHandlerV2 } from 'aws-lambda';
-import { getConnectionOwner, removeConnection } from '../../repositories';
+import { getConnectionOwner, getPresence, removeConnection } from '../../repositories';
 import {
+  broadcastPresenceChange,
   formatResponse,
-  getAuthorizerUser,
   getWebSocketContext,
   handleError,
   logger,
@@ -22,15 +22,29 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
     // Only attempt database cleanup if TABLE_NAME is configured
     if (process.env.TABLE_NAME) {
       try {
-        const authorizerUser = getAuthorizerUser(event);
-        let userId = authorizerUser?.userId;
-
-        if (!userId) {
-          userId = await getConnectionOwner(connectionId);
-        }
+        const userId = await getConnectionOwner(connectionId);
 
         if (userId) {
-          await removeConnection({ userId, connectionId });
+          const removeResult = await removeConnection({ userId, connectionId });
+
+          if (removeResult === 'REMOVED' && process.env.API_GATEWAY_MANAGEMENT_ENDPOINT) {
+            try {
+              const presence = await getPresence(userId, true);
+              if (!presence.online) {
+                await broadcastPresenceChange({
+                  userId,
+                  status: 'offline',
+                  lastSeenAt: presence.lastSeenAt ?? new Date().toISOString(),
+                });
+              }
+            } catch (presenceError) {
+              log.warn('Failed to broadcast offline presence on $disconnect', {
+                userId,
+                error:
+                  presenceError instanceof Error ? presenceError.message : String(presenceError),
+              });
+            }
+          }
         } else {
           log.warn('Unable to resolve owner for disconnected connection', { connectionId });
         }

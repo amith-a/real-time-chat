@@ -75,6 +75,7 @@ describe('DynamoDB Repository Layer', () => {
       });
 
       expect(res.registered).toBe(true);
+      expect(res.becameOnline).toBe(true);
       expect(mockSend).toHaveBeenCalledTimes(1);
       const call = mockSend.mock.calls[0][0];
       expect(call.input.TransactItems).toHaveLength(3);
@@ -86,6 +87,23 @@ describe('DynamoDB Repository Layer', () => {
       );
       expect(call.input.TransactItems[2].Put.Item.PK).toBe('CONN#conn-1');
       expect(call.input.TransactItems[2].Put.Item.SK).toBe('OWNER');
+    });
+
+    it('returns becameOnline: false when a concurrent connection already brought the user online', async () => {
+      const presenceConditionFailed = createCancelError([
+        { Code: 'None' },
+        { Code: 'ConditionalCheckFailed' },
+        { Code: 'None' },
+      ]);
+      mockSend.mockRejectedValueOnce(presenceConditionFailed).mockResolvedValueOnce({});
+
+      const res = await registerConnection({
+        userId: 'user-1',
+        connectionId: 'conn-2',
+      });
+
+      expect(res).toEqual({ registered: true, becameOnline: false });
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
 
     it('returns registered: false when duplicate connection race occurs and owner matches', async () => {
