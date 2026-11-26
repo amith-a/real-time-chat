@@ -130,6 +130,7 @@ DISCONNECT_ARTIFACT_KEY=$(package_and_upload disconnect)
 DEFAULT_ARTIFACT_KEY=$(package_and_upload default)
 SEND_MESSAGE_ARTIFACT_KEY=$(package_and_upload sendMessage)
 HEARTBEAT_ARTIFACT_KEY=$(package_and_upload heartbeat)
+RESUME_ARTIFACT_KEY=$(package_and_upload resume)
 TYPING_ARTIFACT_KEY=$(package_and_upload typing)
 SWEEPER_ARTIFACT_KEY=$(package_and_upload sweeper)
 USERS_ARTIFACT_KEY=$(package_and_upload users)
@@ -155,6 +156,7 @@ aws cloudformation deploy \
     DefaultArtifactKey="$DEFAULT_ARTIFACT_KEY" \
     SendMessageArtifactKey="$SEND_MESSAGE_ARTIFACT_KEY" \
     HeartbeatArtifactKey="$HEARTBEAT_ARTIFACT_KEY" \
+    ResumeArtifactKey="$RESUME_ARTIFACT_KEY" \
     TypingArtifactKey="$TYPING_ARTIFACT_KEY" \
     SweeperArtifactKey="$SWEEPER_ARTIFACT_KEY" \
     UsersArtifactKey="$USERS_ARTIFACT_KEY" \

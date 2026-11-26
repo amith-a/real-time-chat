@@ -6,5 +6,6 @@ export * from './logger';
 export * from './management-api';
 export * from './presence';
 export * from './responses';
+export * from './room-sync';
 export * from './schemas';
 export * from './websocket';

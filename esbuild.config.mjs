@@ -7,6 +7,7 @@ await build({
     'src/handlers/websocket/disconnect.ts',
     'src/handlers/websocket/default.ts',
     'src/handlers/websocket/heartbeat.ts',
+    'src/handlers/websocket/resume.ts',
     'src/handlers/websocket/sendMessage.ts',
     'src/handlers/websocket/typing.ts',
     'src/handlers/scheduled/sweeper.ts',

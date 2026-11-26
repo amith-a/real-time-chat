@@ -89,3 +89,39 @@ export interface PresenceBroadcastPayload {
   status: 'online' | 'offline';
   lastSeenAt: string;
 }
+
+export const resumeSchema = z.object({
+  action: z.literal('resume'),
+  rooms: z
+    .array(
+      z.object({
+        roomId: z.string().trim().min(1, 'roomId is required'),
+        lastSequence: z.number().int().min(0, 'lastSequence must be >= 0'),
+      }),
+    )
+    .min(1, 'At least one room is required')
+    .max(50, 'Cannot resume more than 50 rooms at once'),
+  limitPerRoom: z.number().int().min(1).max(100).default(50),
+});
+
+export type ResumeInput = z.infer<typeof resumeSchema>;
+
+export interface ResumedRoomMessages {
+  roomId: string;
+  messages: Array<{
+    messageId: string;
+    roomId: string;
+    sequenceNumber: number;
+    senderId: string;
+    content: string;
+    messageType: 'TEXT' | 'IMAGE' | 'FILE';
+    createdAt: string;
+  }>;
+  hasMore: boolean;
+  nextAfterSequence: number;
+}
+
+export interface ResumeAckPayload {
+  action: 'resumeAck';
+  rooms: ResumedRoomMessages[];
+}

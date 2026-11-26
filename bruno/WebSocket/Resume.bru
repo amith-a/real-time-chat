@@ -1,0 +1,28 @@
+meta {
+  name: Resume
+  type: ws
+  seq: 4
+}
+
+ws {
+  url: {{webSocket}}?token={{idToken}}
+  body: ws
+  auth: inherit
+}
+
+body:ws {
+  name: resume
+  type: json
+  content: '''
+    {
+      "action": "resume",
+      "rooms": [
+        {
+          "roomId": "{{roomId}}",
+          "lastSequence": 0
+        }
+      ],
+      "limitPerRoom": 50
+    }
+  '''
+}

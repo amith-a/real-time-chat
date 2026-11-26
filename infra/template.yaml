@@ -38,6 +38,10 @@ Parameters:
     Type: String
     Description: S3 object key for heartbeat Lambda zip artifact
 
+  ResumeArtifactKey:
+    Type: String
+    Description: S3 object key for resume Lambda zip artifact
+
   TypingArtifactKey:
     Type: String
     Description: S3 object key for typing Lambda zip artifact
@@ -73,6 +77,7 @@ Resources:
         DefaultArtifactKey: !Ref DefaultArtifactKey
         SendMessageArtifactKey: !Ref SendMessageArtifactKey
         HeartbeatArtifactKey: !Ref HeartbeatArtifactKey
+        ResumeArtifactKey: !Ref ResumeArtifactKey
         TypingArtifactKey: !Ref TypingArtifactKey
         SweeperArtifactKey: !Ref SweeperArtifactKey
     DeletionPolicy: Delete
