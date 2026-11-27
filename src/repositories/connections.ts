@@ -1,5 +1,7 @@
 import {
+  DeleteCommand,
   GetCommand,
+  PutCommand,
   ScanCommand,
   TransactWriteCommand,
   UpdateCommand,
@@ -326,6 +328,47 @@ export interface StaleCandidate {
   lastHeartbeat: IsoTimestamp;
 }
 
+const SWEEPER_CHECKPOINT_KEY = {
+  PK: 'SYSTEM#SWEEPER',
+  SK: 'CHECKPOINT',
+} as const;
+
+export async function getSweeperCheckpoint(): Promise<Record<string, unknown> | undefined> {
+  const res = await getDocClient().send(
+    new GetCommand({
+      TableName: getTableName(),
+      Key: SWEEPER_CHECKPOINT_KEY,
+      ConsistentRead: true,
+    }),
+  );
+  const key = res.Item?.lastEvaluatedKey;
+  return key && typeof key === 'object' ? (key as Record<string, unknown>) : undefined;
+}
+
+export async function saveSweeperCheckpoint(
+  lastEvaluatedKey: Record<string, unknown>,
+): Promise<void> {
+  await getDocClient().send(
+    new PutCommand({
+      TableName: getTableName(),
+      Item: {
+        ...SWEEPER_CHECKPOINT_KEY,
+        lastEvaluatedKey,
+        updatedAt: new Date().toISOString(),
+      },
+    }),
+  );
+}
+
+export async function clearSweeperCheckpoint(): Promise<void> {
+  await getDocClient().send(
+    new DeleteCommand({
+      TableName: getTableName(),
+      Key: SWEEPER_CHECKPOINT_KEY,
+    }),
+  );
+}
+
 /**
  * AP17: paginated Scan for connections whose heartbeat is older than `cutoff`.
  * Yields one page of candidates at a time. The filter runs after items are read, so the cost
@@ -336,8 +379,10 @@ export async function* scanStaleConnections(
   cutoff: IsoTimestamp,
   batchSize?: number,
   maxPages?: number,
+  initialStartKey?: Record<string, unknown>,
+  onPageComplete?: (nextKey?: Record<string, unknown>) => Promise<void>,
 ): AsyncGenerator<StaleCandidate[]> {
-  let startKey: Record<string, unknown> | undefined;
+  let startKey: Record<string, unknown> | undefined = initialStartKey;
   let pages = 0;
   do {
     const out = await getDocClient().send(
@@ -356,6 +401,9 @@ export async function* scanStaleConnections(
     }
     pages++;
     startKey = out.LastEvaluatedKey;
+    if (onPageComplete) {
+      await onPageComplete(startKey);
+    }
   } while (startKey && (maxPages === undefined || pages < maxPages));
 }
 

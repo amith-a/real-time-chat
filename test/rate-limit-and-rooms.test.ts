@@ -5,6 +5,7 @@ import { addMember, MAX_GROUP_ROOM_MEMBERS, removeMember } from '../src/reposito
 import {
   checkConnectionRateLimit,
   resetConnectionRateLimits,
+  sendMessageSchema,
   TooManyRequestsError,
 } from '../src/shared';
 import {
@@ -205,5 +206,82 @@ describe('Rate Limiting, Room Guards & SendMessage ACK Resilience', () => {
     await expect(
       removeMember({ roomId: 'g1', userId: 'admin', removedBy: 'admin' }),
     ).rejects.toThrow('Cannot remove the last admin of a group room');
+  });
+
+  it('removeMember atomically decrements adminCount and rejects concurrent last-admin removal', async () => {
+    const cancelErr = Object.assign(new Error('TransactionCanceled'), {
+      name: 'TransactionCanceledException',
+      CancellationReasons: [{ Code: 'None' }, { Code: 'ConditionalCheckFailed' }],
+    });
+
+    const mockClient = {
+      send: vi
+        .fn()
+        // getRoom
+        .mockResolvedValueOnce({
+          Item: {
+            PK: 'ROOM#g1',
+            SK: 'META',
+            roomId: 'g1',
+            roomType: 'GROUP',
+            memberCount: 3,
+            adminCount: 2,
+          },
+        })
+        // getMembership(removedBy)
+        .mockResolvedValueOnce({
+          Item: { PK: 'USER#admin', SK: 'ROOM#g1', userId: 'admin', roomId: 'g1', role: 'ADMIN' },
+        })
+        // getMembership(userId)
+        .mockResolvedValueOnce({
+          Item: { PK: 'USER#admin', SK: 'ROOM#g1', userId: 'admin', roomId: 'g1', role: 'ADMIN' },
+        })
+        // listRoomMembers (stale pre-check sees 2 admins)
+        .mockResolvedValueOnce({
+          Items: [
+            { userId: 'admin', roomId: 'g1', role: 'ADMIN' },
+            { userId: 'admin2', roomId: 'g1', role: 'ADMIN' },
+            { userId: 'bob', roomId: 'g1', role: 'MEMBER' },
+          ],
+        })
+        // TransactWrite fails on ConditionExpression (adminCount > 1 lost race)
+        .mockRejectedValueOnce(cancelErr)
+        // Re-read getRoom(roomId, true) in catch block
+        .mockResolvedValueOnce({
+          Item: {
+            PK: 'ROOM#g1',
+            SK: 'META',
+            roomId: 'g1',
+            roomType: 'GROUP',
+            memberCount: 2,
+            adminCount: 1,
+          },
+        }),
+    };
+    repositories.setDocClient(
+      mockClient as unknown as Parameters<typeof repositories.setDocClient>[0],
+    );
+
+    await expect(
+      removeMember({ roomId: 'g1', userId: 'admin', removedBy: 'admin' }),
+    ).rejects.toThrow('Cannot remove the last admin of a group room');
+  });
+
+  it('rejects messageId longer than 64 characters to match repository key bounds', () => {
+    const valid = sendMessageSchema.safeParse({
+      action: 'sendMessage',
+      messageId: 'a'.repeat(64),
+      roomId: 'room-1',
+      body: 'hi',
+    });
+    expect(valid.success).toBe(true);
+
+    const tooLong = sendMessageSchema.safeParse({
+      action: 'sendMessage',
+      messageId: 'a'.repeat(65),
+      roomId: 'room-1',
+      body: 'hi',
+    });
+    expect(tooLong.success).toBe(false);
   });
 });

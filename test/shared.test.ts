@@ -417,7 +417,7 @@ describe('Shared Utilities', () => {
     });
 
     describe('sendMessageSchema - Boundary Lengths', () => {
-      it('accepts messageId at boundary min (1 char) and max (128 chars)', () => {
+      it('accepts messageId at boundary min (1 char) and max (64 chars)', () => {
         const minId = sendMessageSchema.safeParse({
           action: 'sendMessage',
           messageId: 'a',
@@ -428,25 +428,23 @@ describe('Shared Utilities', () => {
 
         const maxId = sendMessageSchema.safeParse({
           action: 'sendMessage',
-          messageId: 'a'.repeat(128),
+          messageId: 'a'.repeat(64),
           recipientUserId: 'bob',
           body: 'Hello',
         });
         expect(maxId.success).toBe(true);
       });
 
-      it('rejects messageId exceeding 128 characters', () => {
+      it('rejects messageId exceeding 64 characters', () => {
         const overLimit = sendMessageSchema.safeParse({
           action: 'sendMessage',
-          messageId: 'a'.repeat(129),
+          messageId: 'a'.repeat(65),
           recipientUserId: 'bob',
           body: 'Hello',
         });
         expect(overLimit.success).toBe(false);
         if (!overLimit.success) {
-          expect(overLimit.error.issues[0].message).toBe(
-            'messageId must not exceed 128 characters',
-          );
+          expect(overLimit.error.issues[0].message).toBe('messageId must not exceed 64 characters');
         }
       });
 

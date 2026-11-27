@@ -49,8 +49,11 @@ export function generatePolicy(
 
 /**
  * Extracts authentication token from WebSocket request authorizer event.
- * Browser WebSocket APIs cannot set custom headers, so query parameter is primary.
- * Redacts tokens from any loggable representations.
+ *
+ * API Gateway WebSocket `WebSocketAuthorizer` sets `IdentitySource: route.request.querystring.token`
+ * because browser `WebSocket` APIs cannot attach custom `Authorization` headers (and requiring
+ * both in `IdentitySource` would reject browser clients before invoking this Lambda).
+ * Header/alternate query fallbacks are retained for direct non-browser and test invocations.
  */
 export function extractToken(event: APIGatewayRequestAuthorizerEvent): string | null {
   const queryParams = event.queryStringParameters || {};

@@ -1,5 +1,12 @@
 import type { ScheduledHandler } from 'aws-lambda';
-import { getPresence, removeStaleConnection, scanStaleConnections } from '../../repositories';
+import {
+  clearSweeperCheckpoint,
+  getPresence,
+  getSweeperCheckpoint,
+  removeStaleConnection,
+  saveSweeperCheckpoint,
+  scanStaleConnections,
+} from '../../repositories';
 import {
   broadcastPresenceChange,
   DEFAULT_DYNAMODB_CONCURRENCY,
@@ -42,7 +49,24 @@ export async function runSweeper(nowMs = Date.now()): Promise<SweeperRunResult> 
   let removedCount = 0;
   const affectedUserIds = new Set<string>();
 
-  for await (const page of scanStaleConnections(cutoff, undefined, maxPages)) {
+  const initialStartKey = process.env.TABLE_NAME ? await getSweeperCheckpoint() : undefined;
+  const onPageComplete = process.env.TABLE_NAME
+    ? async (nextKey?: Record<string, unknown>) => {
+        if (nextKey) {
+          await saveSweeperCheckpoint(nextKey);
+        } else {
+          await clearSweeperCheckpoint();
+        }
+      }
+    : undefined;
+
+  for await (const page of scanStaleConnections(
+    cutoff,
+    undefined,
+    maxPages,
+    initialStartKey,
+    onPageComplete,
+  )) {
     scannedPages++;
     scannedCandidates += page.length;
 

@@ -4,6 +4,7 @@ import {
   SendMessageBatchCommand,
   type SQSClient,
 } from '@aws-sdk/client-sqs';
+import { z } from 'zod';
 import { logger } from './logger';
 import type { MessageDeliveryPayload } from './schemas';
 
@@ -11,6 +12,27 @@ export const SQS_MAX_BATCH_SIZE = 10;
 export const DEFAULT_RETRY_BASE_DELAY_SECONDS = 10;
 export const DEFAULT_RETRY_MAX_DELAY_SECONDS = 300;
 export const DEFAULT_SQS_ENQUEUE_MAX_RETRIES = 2;
+
+export const fanoutRetryMessageSchema = z.object({
+  connectionId: z.string().min(1),
+  userId: z.string().min(1),
+  endpoint: z.string().min(1),
+  payload: z.object({
+    action: z.literal('message'),
+    roomId: z.string().min(1),
+    sequenceNumber: z.number().int().min(1),
+    messageId: z.string().min(1),
+    senderId: z.string().min(1),
+    body: z.string(),
+    messageType: z.enum(['TEXT', 'IMAGE', 'FILE']),
+    createdAt: z.string().min(1),
+  }),
+  roomId: z.string().min(1),
+  messageId: z.string().min(1),
+  sequenceNumber: z.number().int().min(1),
+  failedAt: z.string().min(1),
+  reason: z.string().optional(),
+});
 
 export interface FanoutRetryMessage {
   connectionId: string;

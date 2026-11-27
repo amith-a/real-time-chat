@@ -45,6 +45,7 @@ export interface RoomItem extends PrimaryKey {
   createdBy: string;
   name?: string;
   memberCount?: number;
+  adminCount?: number;
   membershipHash?: string;
 }
 

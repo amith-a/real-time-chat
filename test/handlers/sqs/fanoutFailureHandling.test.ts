@@ -424,6 +424,23 @@ describe('Failure Handling, SQS Retries, Exponential Backoff & DLQ Replay', () =
       const res = await fanoutRetryHandler(event);
       expect(res.batchItemFailures).toEqual([]);
     });
+
+    it('acknowledges invalid-schema SQS retry records without poisoning the queue', async () => {
+      const postSpy = vi.spyOn(shared, 'postToConnection');
+      const event: SQSEvent = {
+        Records: [
+          makeSqsRecord(
+            'sqs-invalid-schema',
+            JSON.stringify({ connectionId: 123, payload: null }),
+            '1',
+          ),
+        ],
+      };
+
+      const res = await fanoutRetryHandler(event);
+      expect(res.batchItemFailures).toEqual([]);
+      expect(postSpy).not.toHaveBeenCalled();
+    });
   });
 
   describe('DLQ Replay', () => {
@@ -545,6 +562,39 @@ describe('Failure Handling, SQS Retries, Exponential Backoff & DLQ Replay', () =
         .map((c) => c[0])
         .filter((c): c is DeleteMessageCommand => c instanceof DeleteMessageCommand);
       expect(deleteCalls.map((c) => c.input.ReceiptHandle)).toEqual(['rh-bad', 'rh-schema']);
+    });
+
+    it('counts failed instead of quarantined when deleting a malformed DLQ message fails', async () => {
+      const sqsSendMock = vi.fn().mockImplementation(async (cmd: unknown) => {
+        if (cmd instanceof ReceiveMessageCommand) {
+          if (
+            sqsSendMock.mock.calls.filter((c) => c[0] instanceof ReceiveMessageCommand).length === 1
+          ) {
+            return {
+              Messages: [
+                { MessageId: 'dlq-bad-json', ReceiptHandle: 'rh-bad', Body: '{broken' },
+                { MessageId: 'dlq-no-rh', Body: '{"connectionId":"c1"}' },
+              ],
+            };
+          }
+          return { Messages: [] };
+        }
+        if (cmd instanceof DeleteMessageCommand) {
+          throw new Error('SQS DeleteMessage failed');
+        }
+        return {};
+      });
+      setSqsClient({ send: sqsSendMock } as unknown as SQSClient);
+
+      const result = await fanoutReplayHandler({ maxMessages: 10 });
+      expect(result).toEqual({
+        received: 2,
+        delivered: 0,
+        pruned: 0,
+        quarantined: 0,
+        failed: 2,
+        stoppedEarly: false,
+      });
     });
 
     it('continues safely if DeleteMessage fails after successful replay', async () => {

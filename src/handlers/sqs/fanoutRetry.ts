@@ -2,6 +2,7 @@ import type { SQSBatchItemFailure, SQSBatchResponse, SQSEvent } from 'aws-lambda
 import {
   calculateExponentialBackoffSeconds,
   type FanoutRetryMessage,
+  fanoutRetryMessageSchema,
   logger,
   postToConnection,
   updateMessageVisibility,
@@ -12,17 +13,32 @@ export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
   const queueUrl = process.env.FANOUT_RETRY_QUEUE_URL;
 
   for (const record of event.Records) {
-    let item: FanoutRetryMessage;
+    let parsed: unknown;
     try {
-      item = JSON.parse(record.body) as FanoutRetryMessage;
+      parsed = JSON.parse(record.body);
     } catch (parseError) {
       logger.error(
-        'Invalid fan-out retry SQS payload; skipping to avoid poison loop',
+        'Invalid fan-out retry SQS JSON; acknowledging to avoid poison loop',
         parseError instanceof Error ? parseError : new Error(String(parseError)),
         { sqsMessageId: record.messageId },
       );
       continue;
     }
+
+    const validation = fanoutRetryMessageSchema.safeParse(parsed);
+    if (!validation.success) {
+      logger.error(
+        'Invalid fan-out retry SQS message schema; acknowledging to avoid poison loop',
+        undefined,
+        {
+          sqsMessageId: record.messageId,
+          issues: validation.error.issues.map((i) => i.message),
+        },
+      );
+      continue;
+    }
+
+    const item: FanoutRetryMessage = validation.data;
 
     try {
       const delivered = await postToConnection({

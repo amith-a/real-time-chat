@@ -273,6 +273,8 @@ export async function createGroupRoom(input: {
     Array.from(memberMap.entries()).map(([userId, role]) => ({ userId, role })),
   );
 
+  const adminCount = Array.from(memberMap.values()).filter((r) => r === 'ADMIN').length;
+
   const meta: RoomItem = {
     ...roomMetaKey(roomId),
     roomId,
@@ -280,6 +282,7 @@ export async function createGroupRoom(input: {
     createdAt: now,
     createdBy,
     memberCount: memberMap.size,
+    adminCount,
     membershipHash,
     ...(name && { name }),
   };
@@ -402,7 +405,10 @@ export async function addMember(input: AddMemberInput): Promise<AddMemberResult>
       Update: {
         TableName: table,
         Key: roomMetaKey(roomId),
-        UpdateExpression: 'SET memberCount = if_not_exists(memberCount, :zero) + :inc',
+        UpdateExpression:
+          role === 'ADMIN'
+            ? 'SET memberCount = if_not_exists(memberCount, :zero) + :inc, adminCount = if_not_exists(adminCount, :zero) + :inc'
+            : 'SET memberCount = if_not_exists(memberCount, :zero) + :inc',
         ConditionExpression:
           'attribute_exists(PK) AND (attribute_not_exists(memberCount) OR memberCount < :maxMembers)',
         ExpressionAttributeValues: {
@@ -492,8 +498,11 @@ export async function removeMember(input: RemoveMemberInput): Promise<{ success:
     throw new BadRequestError('Cannot remove the last member of a group room');
   }
 
-  // Prevent removing or leaving as the last admin of a group room
-  if (targetMembership.role === 'ADMIN') {
+  const isRemovingAdmin = targetMembership.role === 'ADMIN';
+  const enforceAtomicAdminCount = isRemovingAdmin && room.adminCount !== undefined;
+
+  // Friendly pre-check (the transaction ConditionExpression below is the authoritative concurrency guard)
+  if (isRemovingAdmin) {
     const members = await listRoomMembers(roomId);
     const adminCount = members.filter((m) => m.role === 'ADMIN').length;
     if (adminCount <= 1) {
@@ -515,9 +524,15 @@ export async function removeMember(input: RemoveMemberInput): Promise<{ success:
       Update: {
         TableName: table,
         Key: roomMetaKey(roomId),
-        UpdateExpression: 'SET memberCount = memberCount - :dec',
-        ConditionExpression: 'attribute_exists(PK) AND memberCount > :minCount',
-        ExpressionAttributeValues: { ':dec': 1, ':minCount': 1 },
+        UpdateExpression: enforceAtomicAdminCount
+          ? 'SET memberCount = memberCount - :dec, adminCount = adminCount - :dec'
+          : 'SET memberCount = memberCount - :dec',
+        ConditionExpression: enforceAtomicAdminCount
+          ? 'attribute_exists(PK) AND memberCount > :minCount AND adminCount > :minAdmins'
+          : 'attribute_exists(PK) AND memberCount > :minCount',
+        ExpressionAttributeValues: enforceAtomicAdminCount
+          ? { ':dec': 1, ':minCount': 1, ':minAdmins': 1 }
+          : { ':dec': 1, ':minCount': 1 },
       },
     },
   ];
@@ -550,7 +565,14 @@ export async function removeMember(input: RemoveMemberInput): Promise<{ success:
         throw new NotFoundError(`User ${userId} is not a member of this room`);
       }
       if (conditionFailedAt(reasons, 1)) {
-        throw new BadRequestError('Cannot remove the last member of a group room');
+        const currentRoom = await getRoom(roomId, true);
+        if (!currentRoom) {
+          throw new NotFoundError(`Room ${roomId} not found`);
+        }
+        if (currentRoom.memberCount !== undefined && currentRoom.memberCount <= 1) {
+          throw new BadRequestError('Cannot remove the last member of a group room');
+        }
+        throw new BadRequestError('Cannot remove the last admin of a group room');
       }
       if (reasons.length > 2 && conditionFailedAt(reasons, 2)) {
         throw new ForbiddenError('Only room admins can remove other members');

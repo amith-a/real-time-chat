@@ -7,7 +7,7 @@ export const sendMessageSchema = z
       .string()
       .trim()
       .min(1, 'messageId is required')
-      .max(128, 'messageId must not exceed 128 characters'),
+      .max(64, 'messageId must not exceed 64 characters'),
     recipientUserId: z.string().trim().min(1).optional(),
     roomId: z.string().trim().min(1).optional(),
     body: z

@@ -2,6 +2,7 @@ import { DeleteMessageCommand, ReceiveMessageCommand, type SQSClient } from '@aw
 import type { Context } from 'aws-lambda';
 import {
   type FanoutRetryMessage,
+  fanoutRetryMessageSchema,
   getSqsClient,
   logger,
   postToConnection,
@@ -31,17 +32,7 @@ export interface ReplayDlqResult {
 }
 
 function isValidRetryMessage(value: unknown): value is FanoutRetryMessage {
-  if (!value || typeof value !== 'object') return false;
-  const msg = value as Partial<FanoutRetryMessage>;
-  return (
-    typeof msg.connectionId === 'string' &&
-    msg.connectionId.length > 0 &&
-    typeof msg.userId === 'string' &&
-    typeof msg.endpoint === 'string' &&
-    msg.endpoint.length > 0 &&
-    msg.payload !== undefined &&
-    typeof msg.payload === 'object'
-  );
+  return fanoutRetryMessageSchema.safeParse(value).success;
 }
 
 /**
@@ -72,6 +63,26 @@ export async function replayDlqMessages(input: ReplayDlqInput = {}): Promise<Rep
 
   const isNearTimeout = (): boolean =>
     typeof getRemainingTime === 'function' && getRemainingTime() <= timeoutBufferMs;
+
+  const quarantineMessage = async (
+    sqsMessageId: string | undefined,
+    receiptHandle: string,
+    reason: string,
+  ): Promise<boolean> => {
+    try {
+      await client.send(
+        new DeleteMessageCommand({ QueueUrl: dlqUrl, ReceiptHandle: receiptHandle }),
+      );
+      return true;
+    } catch (deleteError) {
+      logger.warn('Failed to delete quarantined DLQ message; counting as failed', {
+        sqsMessageId,
+        reason,
+        error: deleteError instanceof Error ? deleteError.message : String(deleteError),
+      });
+      return false;
+    }
+  };
 
   while (received < maxMessages) {
     if (isNearTimeout()) {
@@ -111,10 +122,17 @@ export async function replayDlqMessages(input: ReplayDlqInput = {}): Promise<Rep
       }
 
       received++;
+      // SQS deletion requires a ReceiptHandle; messages missing Body or ReceiptHandle are unprocessable.
       if (!msg.Body || !msg.ReceiptHandle) {
-        logger.error('DLQ message missing Body or ReceiptHandle; skipping', undefined, {
-          sqsMessageId: msg.MessageId,
-        });
+        logger.error(
+          'Unprocessable DLQ message missing Body or ReceiptHandle; cannot quarantine',
+          undefined,
+          {
+            sqsMessageId: msg.MessageId,
+            hasBody: Boolean(msg.Body),
+            hasReceiptHandle: Boolean(msg.ReceiptHandle),
+          },
+        );
         failed++;
         continue;
       }
@@ -128,17 +146,11 @@ export async function replayDlqMessages(input: ReplayDlqInput = {}): Promise<Rep
           parseError instanceof Error ? parseError : new Error(String(parseError)),
           { sqsMessageId: msg.MessageId, bodyPreview: msg.Body.slice(0, 200) },
         );
-        try {
-          await client.send(
-            new DeleteMessageCommand({ QueueUrl: dlqUrl, ReceiptHandle: msg.ReceiptHandle }),
-          );
-        } catch (deleteError) {
-          logger.warn('Failed to delete quarantined malformed DLQ message', {
-            sqsMessageId: msg.MessageId,
-            error: deleteError instanceof Error ? deleteError.message : String(deleteError),
-          });
+        if (await quarantineMessage(msg.MessageId, msg.ReceiptHandle, 'malformed_json')) {
+          quarantined++;
+        } else {
+          failed++;
         }
-        quarantined++;
         continue;
       }
 
@@ -147,17 +159,11 @@ export async function replayDlqMessages(input: ReplayDlqInput = {}): Promise<Rep
           sqsMessageId: msg.MessageId,
           bodyPreview: msg.Body.slice(0, 200),
         });
-        try {
-          await client.send(
-            new DeleteMessageCommand({ QueueUrl: dlqUrl, ReceiptHandle: msg.ReceiptHandle }),
-          );
-        } catch (deleteError) {
-          logger.warn('Failed to delete quarantined invalid-schema DLQ message', {
-            sqsMessageId: msg.MessageId,
-            error: deleteError instanceof Error ? deleteError.message : String(deleteError),
-          });
+        if (await quarantineMessage(msg.MessageId, msg.ReceiptHandle, 'invalid_schema')) {
+          quarantined++;
+        } else {
+          failed++;
         }
-        quarantined++;
         continue;
       }
 
