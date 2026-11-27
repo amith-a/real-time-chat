@@ -50,8 +50,13 @@ export async function runSweeper(nowMs = Date.now()): Promise<SweeperRunResult> 
   const affectedUserIds = new Set<string>();
 
   const initialStartKey = process.env.TABLE_NAME ? await getSweeperCheckpoint() : undefined;
+  let lastPageFailed = false;
   const onPageComplete = process.env.TABLE_NAME
     ? async (nextKey?: Record<string, unknown>) => {
+        if (lastPageFailed) {
+          logger.warn('Skipping sweeper checkpoint update because page processing had failures');
+          return;
+        }
         if (nextKey) {
           await saveSweeperCheckpoint(nextKey);
         } else {
@@ -69,6 +74,7 @@ export async function runSweeper(nowMs = Date.now()): Promise<SweeperRunResult> 
   )) {
     scannedPages++;
     scannedCandidates += page.length;
+    lastPageFailed = false;
 
     const results = await pMapSettled(
       page,
@@ -82,12 +88,17 @@ export async function runSweeper(nowMs = Date.now()): Promise<SweeperRunResult> 
         removedCount++;
         affectedUserIds.add(page[i].userId);
       } else if (res.status === 'rejected') {
+        lastPageFailed = true;
         logger.warn('Failed to remove stale connection candidate', {
           connectionId: page[i].connectionId,
           userId: page[i].userId,
           error: res.reason instanceof Error ? res.reason.message : String(res.reason),
         });
       }
+    }
+
+    if (lastPageFailed) {
+      break;
     }
   }
 

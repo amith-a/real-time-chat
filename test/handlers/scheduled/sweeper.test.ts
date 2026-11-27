@@ -140,4 +140,149 @@ describe('Scheduled stale connection & presence sweeper', () => {
       }),
     );
   });
+
+  describe('Sweeper Checkpoint & Pagination', () => {
+    const originalTableName = process.env.TABLE_NAME;
+    const originalMaxPages = process.env.SWEEPER_MAX_PAGES;
+
+    beforeEach(() => {
+      process.env.TABLE_NAME = 'test-sweeper-table';
+      delete process.env.SWEEPER_MAX_PAGES;
+    });
+
+    afterEach(() => {
+      if (originalTableName === undefined) {
+        delete process.env.TABLE_NAME;
+      } else {
+        process.env.TABLE_NAME = originalTableName;
+      }
+      if (originalMaxPages === undefined) {
+        delete process.env.SWEEPER_MAX_PAGES;
+      } else {
+        process.env.SWEEPER_MAX_PAGES = originalMaxPages;
+      }
+    });
+
+    it('starts scanning from the beginning when no checkpoint exists', async () => {
+      vi.spyOn(repositories, 'getSweeperCheckpoint').mockResolvedValue(undefined);
+      const clearSpy = vi.spyOn(repositories, 'clearSweeperCheckpoint').mockResolvedValue();
+      const saveSpy = vi.spyOn(repositories, 'saveSweeperCheckpoint').mockResolvedValue();
+
+      const scanSpy = vi
+        .spyOn(repositories, 'scanStaleConnections')
+        .mockImplementation(async function* (_cutoff, _batch, _max, initialStartKey, onComplete) {
+          expect(initialStartKey).toBeUndefined();
+          yield [];
+          await onComplete?.(undefined);
+        });
+
+      await runSweeper(Date.parse('2026-11-26T12:00:00.000Z'));
+
+      expect(scanSpy).toHaveBeenCalledTimes(1);
+      expect(saveSpy).not.toHaveBeenCalled();
+      expect(clearSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('resumes from saved LastEvaluatedKey checkpoint on next invocation', async () => {
+      const savedKey = { PK: 'USER#alice', SK: 'CONN#conn-1' };
+      vi.spyOn(repositories, 'getSweeperCheckpoint').mockResolvedValue(savedKey);
+      const clearSpy = vi.spyOn(repositories, 'clearSweeperCheckpoint').mockResolvedValue();
+
+      const scanSpy = vi
+        .spyOn(repositories, 'scanStaleConnections')
+        .mockImplementation(async function* (_cutoff, _batch, _max, initialStartKey, onComplete) {
+          expect(initialStartKey).toEqual(savedKey);
+          yield [
+            {
+              userId: 'bob',
+              connectionId: 'conn-bob',
+              lastHeartbeat: '2026-11-26T11:50:00.000Z',
+            },
+          ];
+          await onComplete?.(undefined);
+        });
+      vi.spyOn(repositories, 'removeStaleConnection').mockResolvedValue('NOT_FOUND_OR_CHANGED');
+
+      await runSweeper(Date.parse('2026-11-26T12:00:00.000Z'));
+
+      expect(scanSpy).toHaveBeenCalledTimes(1);
+      expect(clearSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('advances checkpoint after each processed page across multiple pages and clears at the end', async () => {
+      const keyPage1 = { PK: 'USER#u1', SK: 'CONN#c1' };
+      const keyPage2 = { PK: 'USER#u2', SK: 'CONN#c2' };
+      vi.spyOn(repositories, 'getSweeperCheckpoint').mockResolvedValue(undefined);
+      const saveSpy = vi.spyOn(repositories, 'saveSweeperCheckpoint').mockResolvedValue();
+      const clearSpy = vi.spyOn(repositories, 'clearSweeperCheckpoint').mockResolvedValue();
+      vi.spyOn(repositories, 'removeStaleConnection').mockResolvedValue('NOT_FOUND_OR_CHANGED');
+
+      vi.spyOn(repositories, 'scanStaleConnections').mockImplementation(
+        async function* (_cutoff, _batch, _max, _startKey, onComplete) {
+          yield [{ userId: 'u1', connectionId: 'c1', lastHeartbeat: '2026-11-26T11:50:00.000Z' }];
+          await onComplete?.(keyPage1);
+
+          yield [{ userId: 'u2', connectionId: 'c2', lastHeartbeat: '2026-11-26T11:50:00.000Z' }];
+          await onComplete?.(keyPage2);
+
+          yield [{ userId: 'u3', connectionId: 'c3', lastHeartbeat: '2026-11-26T11:50:00.000Z' }];
+          await onComplete?.(undefined);
+        },
+      );
+
+      const res = await runSweeper(Date.parse('2026-11-26T12:00:00.000Z'));
+
+      expect(res.scannedPages).toBe(3);
+      expect(saveSpy).toHaveBeenNthCalledWith(1, keyPage1);
+      expect(saveSpy).toHaveBeenNthCalledWith(2, keyPage2);
+      expect(clearSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('retains checkpoint when SWEEPER_MAX_PAGES limit is reached so next invocation can continue', async () => {
+      process.env.SWEEPER_MAX_PAGES = '1';
+      const nextKey = { PK: 'USER#u1', SK: 'CONN#c1' };
+      vi.spyOn(repositories, 'getSweeperCheckpoint').mockResolvedValue(undefined);
+      const saveSpy = vi.spyOn(repositories, 'saveSweeperCheckpoint').mockResolvedValue();
+      const clearSpy = vi.spyOn(repositories, 'clearSweeperCheckpoint').mockResolvedValue();
+      vi.spyOn(repositories, 'removeStaleConnection').mockResolvedValue('NOT_FOUND_OR_CHANGED');
+
+      vi.spyOn(repositories, 'scanStaleConnections').mockImplementation(
+        async function* (_cutoff, _batch, maxPages, _startKey, onComplete) {
+          expect(maxPages).toBe(1);
+          yield [{ userId: 'u1', connectionId: 'c1', lastHeartbeat: '2026-11-26T11:50:00.000Z' }];
+          await onComplete?.(nextKey);
+        },
+      );
+
+      const res = await runSweeper(Date.parse('2026-11-26T12:00:00.000Z'));
+
+      expect(res.scannedPages).toBe(1);
+      expect(saveSpy).toHaveBeenCalledWith(nextKey);
+      expect(clearSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not advance checkpoint when page processing fails', async () => {
+      const nextKey = { PK: 'USER#u1', SK: 'CONN#c1' };
+      vi.spyOn(repositories, 'getSweeperCheckpoint').mockResolvedValue(undefined);
+      const saveSpy = vi.spyOn(repositories, 'saveSweeperCheckpoint').mockResolvedValue();
+      const clearSpy = vi.spyOn(repositories, 'clearSweeperCheckpoint').mockResolvedValue();
+      vi.spyOn(repositories, 'removeStaleConnection').mockRejectedValue(
+        new Error('DynamoDB write failed'),
+      );
+
+      vi.spyOn(repositories, 'scanStaleConnections').mockImplementation(
+        async function* (_cutoff, _batch, _max, _startKey, onComplete) {
+          yield [{ userId: 'u1', connectionId: 'c1', lastHeartbeat: '2026-11-26T11:50:00.000Z' }];
+          await onComplete?.(nextKey);
+        },
+      );
+
+      const res = await runSweeper(Date.parse('2026-11-26T12:00:00.000Z'));
+
+      expect(res.scannedPages).toBe(1);
+      expect(res.removedCount).toBe(0);
+      expect(saveSpy).not.toHaveBeenCalled();
+      expect(clearSpy).not.toHaveBeenCalled();
+    });
+  });
 });
