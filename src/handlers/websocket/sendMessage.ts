@@ -143,6 +143,7 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (
     let staleCount = 0;
     let errorCount = 0;
     let queuedRetryCount = 0;
+    let unrecoveredRetryCount = 0;
 
     // 2. If not a duplicate replay, look up recipients and deliver; delivery errors must not fail the ACK
     if (!result.duplicate) {
@@ -273,20 +274,54 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (
             }
           }
 
-          if (failedDeliveries.length > 0 && process.env.FANOUT_RETRY_QUEUE_URL) {
-            try {
-              const enqueueResult = await enqueueFanoutRetries(failedDeliveries);
-              queuedRetryCount = enqueueResult.enqueued;
-            } catch (sqsError) {
+          if (failedDeliveries.length > 0) {
+            if (!process.env.FANOUT_RETRY_QUEUE_URL) {
+              unrecoveredRetryCount = failedDeliveries.length;
               log.error(
-                'Failed to enqueue failed fan-out deliveries to SQS',
-                sqsError instanceof Error ? sqsError : new Error(String(sqsError)),
+                'FANOUT_RETRY_QUEUE_URL is not configured; failed deliveries cannot be queued for retry',
+                undefined,
                 {
                   roomId: targetRoomId,
                   messageId,
-                  failedDeliveryCount: failedDeliveries.length,
+                  sequenceNumber: result.sequenceNumber,
+                  unrecoveredRetryCount,
+                  failedConnectionIds: failedDeliveries.map((d) => d.connectionId),
                 },
               );
+            } else {
+              try {
+                const enqueueResult = await enqueueFanoutRetries(failedDeliveries);
+                queuedRetryCount = enqueueResult.enqueued;
+                unrecoveredRetryCount = enqueueResult.failed;
+
+                if (enqueueResult.failed > 0) {
+                  log.error(
+                    'Some failed fan-out deliveries could not be queued to SQS',
+                    undefined,
+                    {
+                      roomId: targetRoomId,
+                      messageId,
+                      sequenceNumber: result.sequenceNumber,
+                      queuedRetryCount,
+                      unrecoveredRetryCount,
+                      failedConnectionIds: enqueueResult.failedItems.map((d) => d.connectionId),
+                    },
+                  );
+                }
+              } catch (sqsError) {
+                unrecoveredRetryCount = failedDeliveries.length;
+                log.error(
+                  'Failed to enqueue failed fan-out deliveries to SQS',
+                  sqsError instanceof Error ? sqsError : new Error(String(sqsError)),
+                  {
+                    roomId: targetRoomId,
+                    messageId,
+                    sequenceNumber: result.sequenceNumber,
+                    unrecoveredRetryCount,
+                    failedConnectionIds: failedDeliveries.map((d) => d.connectionId),
+                  },
+                );
+              }
             }
           }
         }
@@ -325,6 +360,7 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (
       staleCount,
       errorCount,
       queuedRetryCount,
+      unrecoveredRetryCount,
       metrics: {
         membershipLookupDurationMs,
         connectionResolutionDurationMs,

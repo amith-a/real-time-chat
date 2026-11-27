@@ -1,7 +1,8 @@
 import {
+  SQSClient as AwsSQSClient,
   ChangeMessageVisibilityCommand,
   SendMessageBatchCommand,
-  SQSClient,
+  type SQSClient,
 } from '@aws-sdk/client-sqs';
 import { logger } from './logger';
 import type { MessageDeliveryPayload } from './schemas';
@@ -9,6 +10,7 @@ import type { MessageDeliveryPayload } from './schemas';
 export const SQS_MAX_BATCH_SIZE = 10;
 export const DEFAULT_RETRY_BASE_DELAY_SECONDS = 10;
 export const DEFAULT_RETRY_MAX_DELAY_SECONDS = 300;
+export const DEFAULT_SQS_ENQUEUE_MAX_RETRIES = 2;
 
 export interface FanoutRetryMessage {
   connectionId: string;
@@ -22,6 +24,12 @@ export interface FanoutRetryMessage {
   reason?: string;
 }
 
+export interface EnqueueFanoutRetriesResult {
+  enqueued: number;
+  failed: number;
+  failedItems: FanoutRetryMessage[];
+}
+
 let injectedSqsClient: SQSClient | undefined;
 let cachedSqsClient: SQSClient | undefined;
 
@@ -30,7 +38,7 @@ export function getSqsClient(): SQSClient {
     return injectedSqsClient;
   }
   if (!cachedSqsClient) {
-    cachedSqsClient = new SQSClient({});
+    cachedSqsClient = new AwsSQSClient({});
   }
   return cachedSqsClient;
 }
@@ -45,65 +53,114 @@ export function resetSqsClient(): void {
 }
 
 /**
- * Computes exponential backoff delay (in seconds) for SQS redelivery
- * based on `ApproximateReceiveCount`.
+ * Computes exponential backoff with bounded equal jitter (in seconds) for SQS redelivery
+ * based on `ApproximateReceiveCount`. Spreads retries across `[capped * 0.5, capped]`.
  */
 export function calculateExponentialBackoffSeconds(
   receiveCount: number,
   baseDelaySeconds = DEFAULT_RETRY_BASE_DELAY_SECONDS,
   maxDelaySeconds = DEFAULT_RETRY_MAX_DELAY_SECONDS,
+  randomFn: () => number = Math.random,
 ): number {
-  const safeCount = Math.max(1, Math.floor(receiveCount));
-  const delay = baseDelaySeconds * 2 ** (safeCount - 1);
-  return Math.min(maxDelaySeconds, delay);
+  const safeCount = Number.isFinite(receiveCount) ? Math.max(1, Math.floor(receiveCount)) : 1;
+  const capped = Math.min(maxDelaySeconds, baseDelaySeconds * 2 ** (safeCount - 1));
+  const jittered = Math.floor(capped * (0.5 + 0.5 * randomFn()));
+  return Math.max(1, Math.min(maxDelaySeconds, jittered));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
  * Sends failed fan-out delivery tasks to SQS in batches of up to 10.
+ * Retries only failed batch entries with bounded exponential backoff.
  */
 export async function enqueueFanoutRetries(
   items: readonly FanoutRetryMessage[],
   queueUrl = process.env.FANOUT_RETRY_QUEUE_URL,
   customClient?: SQSClient,
-): Promise<{ enqueued: number; failed: number }> {
-  if (!queueUrl || items.length === 0) {
-    return { enqueued: 0, failed: 0 };
+  maxBatchRetries = DEFAULT_SQS_ENQUEUE_MAX_RETRIES,
+): Promise<EnqueueFanoutRetriesResult> {
+  if (items.length === 0) {
+    return { enqueued: 0, failed: 0, failedItems: [] };
+  }
+
+  if (!queueUrl) {
+    return { enqueued: 0, failed: items.length, failedItems: [...items] };
   }
 
   const client = customClient || getSqsClient();
   let enqueued = 0;
-  let failed = 0;
+  const failedItems: FanoutRetryMessage[] = [];
 
   for (let i = 0; i < items.length; i += SQS_MAX_BATCH_SIZE) {
-    const batch = items.slice(i, i + SQS_MAX_BATCH_SIZE);
-    const result = await client.send(
-      new SendMessageBatchCommand({
-        QueueUrl: queueUrl,
-        Entries: batch.map((item, idx) => ({
-          Id: `${i + idx}`,
-          MessageBody: JSON.stringify(item),
-          MessageAttributes: {
-            roomId: { DataType: 'String', StringValue: item.roomId },
-            messageId: { DataType: 'String', StringValue: item.messageId },
-          },
-        })),
-      }),
-    );
+    let pending = items.slice(i, i + SQS_MAX_BATCH_SIZE).map((item, idx) => ({
+      id: `${i + idx}`,
+      item,
+    }));
 
-    const batchEnqueued = result.Successful?.length ?? 0;
-    const batchFailed = result.Failed?.length ?? 0;
-    enqueued += batchEnqueued;
-    failed += batchFailed;
+    for (let attempt = 0; attempt <= maxBatchRetries && pending.length > 0; attempt++) {
+      if (attempt > 0) {
+        const delayMs = 25 * 2 ** (attempt - 1);
+        await sleep(delayMs);
+      }
 
-    if (batchFailed > 0) {
-      logger.warn('Some fan-out retry entries failed to enqueue to SQS', {
-        queueUrl,
-        failedEntries: result.Failed,
-      });
+      const result = await client.send(
+        new SendMessageBatchCommand({
+          QueueUrl: queueUrl,
+          Entries: pending.map((entry) => ({
+            Id: entry.id,
+            MessageBody: JSON.stringify(entry.item),
+            MessageAttributes: {
+              roomId: { DataType: 'String', StringValue: entry.item.roomId },
+              messageId: { DataType: 'String', StringValue: entry.item.messageId },
+            },
+          })),
+        }),
+      );
+
+      enqueued += result.Successful?.length ?? 0;
+
+      const failedEntries = result.Failed ?? [];
+      if (failedEntries.length === 0) {
+        pending = [];
+        break;
+      }
+
+      const failedById = new Map(failedEntries.map((f) => [f.Id, f]));
+      const nextPending: typeof pending = [];
+
+      for (const entry of pending) {
+        const failure = failedById.get(entry.id);
+        if (!failure) continue;
+
+        if (failure.SenderFault || attempt === maxBatchRetries) {
+          failedItems.push(entry.item);
+          logger.error('SQS fan-out retry batch entry failed', undefined, {
+            queueUrl,
+            entryId: entry.id,
+            connectionId: entry.item.connectionId,
+            roomId: entry.item.roomId,
+            messageId: entry.item.messageId,
+            code: failure.Code,
+            senderFault: failure.SenderFault,
+            errorMessage: failure.Message,
+          });
+        } else {
+          nextPending.push(entry);
+        }
+      }
+
+      pending = nextPending;
     }
   }
 
-  return { enqueued, failed };
+  return {
+    enqueued,
+    failed: failedItems.length,
+    failedItems,
+  };
 }
 
 export async function updateMessageVisibility(input: {

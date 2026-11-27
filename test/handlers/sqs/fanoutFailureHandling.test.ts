@@ -91,12 +91,65 @@ describe('Failure Handling, SQS Retries, Exponential Backoff & DLQ Replay', () =
   });
 
   describe('Exponential backoff & SQS batch enqueue', () => {
-    it('computes exponential backoff with cap', () => {
-      expect(calculateExponentialBackoffSeconds(1)).toBe(10);
-      expect(calculateExponentialBackoffSeconds(2)).toBe(20);
-      expect(calculateExponentialBackoffSeconds(3)).toBe(40);
-      expect(calculateExponentialBackoffSeconds(4)).toBe(80);
-      expect(calculateExponentialBackoffSeconds(10)).toBe(300);
+    it('computes exponential backoff with bounded equal jitter and 300s cap', () => {
+      // Deterministic min (random = 0 -> 0.5 * capped) and max (random = 1 -> capped)
+      expect(calculateExponentialBackoffSeconds(1, 10, 300, () => 0)).toBe(5);
+      expect(calculateExponentialBackoffSeconds(1, 10, 300, () => 1)).toBe(10);
+      expect(calculateExponentialBackoffSeconds(2, 10, 300, () => 0)).toBe(10);
+      expect(calculateExponentialBackoffSeconds(2, 10, 300, () => 1)).toBe(20);
+      expect(calculateExponentialBackoffSeconds(3, 10, 300, () => 0)).toBe(20);
+      expect(calculateExponentialBackoffSeconds(3, 10, 300, () => 1)).toBe(40);
+      expect(calculateExponentialBackoffSeconds(10, 10, 300, () => 0)).toBe(150);
+      expect(calculateExponentialBackoffSeconds(10, 10, 300, () => 1)).toBe(300);
+
+      // Default Math.random stays within [0.5 * capped, capped]
+      for (const [attempt, minDelay, maxDelay] of [
+        [1, 5, 10],
+        [2, 10, 20],
+        [3, 20, 40],
+        [4, 40, 80],
+        [10, 150, 300],
+      ] as const) {
+        const delay = calculateExponentialBackoffSeconds(attempt);
+        expect(delay).toBeGreaterThanOrEqual(minDelay);
+        expect(delay).toBeLessThanOrEqual(maxDelay);
+      }
+    });
+
+    it('retries only failed entries on partial SQS batch failure', async () => {
+      const sendMock = vi
+        .fn()
+        .mockResolvedValueOnce({
+          Successful: [{ Id: '0' }, { Id: '1' }],
+          Failed: [{ Id: '2', Code: 'InternalError', SenderFault: false }],
+        })
+        .mockResolvedValueOnce({
+          Successful: [{ Id: '2' }],
+          Failed: [],
+        });
+      setSqsClient({ send: sendMock } as unknown as SQSClient);
+
+      const items = [
+        makeRetryPayload({ connectionId: 'conn-0' }),
+        makeRetryPayload({ connectionId: 'conn-1' }),
+        makeRetryPayload({ connectionId: 'conn-2' }),
+      ];
+      const res = await enqueueFanoutRetries(items);
+
+      expect(sendMock).toHaveBeenCalledTimes(2);
+      const retryCmd = sendMock.mock.calls[1][0] as SendMessageBatchCommand;
+      expect(retryCmd.input.Entries).toHaveLength(1);
+      expect(retryCmd.input.Entries?.[0]?.Id).toBe('2');
+      expect(res).toEqual({ enqueued: 3, failed: 0, failedItems: [] });
+    });
+
+    it('reports unqueued items when FANOUT_RETRY_QUEUE_URL is missing', async () => {
+      delete process.env.FANOUT_RETRY_QUEUE_URL;
+      const items = [makeRetryPayload({ connectionId: 'conn-0' })];
+      const res = await enqueueFanoutRetries(items);
+      expect(res.enqueued).toBe(0);
+      expect(res.failed).toBe(1);
+      expect(res.failedItems).toHaveLength(1);
     });
 
     it('chunks enqueueFanoutRetries into batches of 10', async () => {
@@ -265,6 +318,61 @@ describe('Failure Handling, SQS Retries, Exponential Backoff & DLQ Replay', () =
       ) as FanoutRetryMessage;
       expect(firstQueued.reason).toBe('LambdaTimeoutApproaching');
     });
+
+    it('logs error and preserves 200 ACK when entire SQS request throws', async () => {
+      setupRoomSendMocks(['conn-fail']);
+      vi.spyOn(shared, 'postToConnection').mockRejectedValue(new Error('500 Upstream error'));
+      const sqsSendMock = vi.fn().mockRejectedValue(new Error('SQS Service Unavailable'));
+      setSqsClient({ send: sqsSendMock } as unknown as SQSClient);
+
+      const event = createMockEvent({
+        routeKey: 'sendMessage',
+        connectionId: 'conn-alice',
+        authorizer: { userId: 'alice' },
+        body: JSON.stringify({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          roomId: 'room-1',
+          body: 'SQS throws test',
+        }),
+      });
+
+      const result = (await sendMessageHandler(
+        event,
+        mockContext,
+        mockCallback,
+      )) as ExpectedResponse;
+      expect(result.statusCode).toBe(200);
+      expect(sqsSendMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('handles missing FANOUT_RETRY_QUEUE_URL without crashing sender ACK', async () => {
+      delete process.env.FANOUT_RETRY_QUEUE_URL;
+      setupRoomSendMocks(['conn-fail']);
+      vi.spyOn(shared, 'postToConnection').mockRejectedValue(new Error('500 Upstream error'));
+      const sqsSendMock = vi.fn();
+      setSqsClient({ send: sqsSendMock } as unknown as SQSClient);
+
+      const event = createMockEvent({
+        routeKey: 'sendMessage',
+        connectionId: 'conn-alice',
+        authorizer: { userId: 'alice' },
+        body: JSON.stringify({
+          action: 'sendMessage',
+          messageId: 'msg-1',
+          roomId: 'room-1',
+          body: 'Missing queue url test',
+        }),
+      });
+
+      const result = (await sendMessageHandler(
+        event,
+        mockContext,
+        mockCallback,
+      )) as ExpectedResponse;
+      expect(result.statusCode).toBe(200);
+      expect(sqsSendMock).not.toHaveBeenCalled();
+    });
   });
 
   describe('SQS retry worker & exponential backoff toward DLQ', () => {
@@ -287,10 +395,10 @@ describe('Failure Handling, SQS Retries, Exponential Backoff & DLQ Replay', () =
       const sqsSendMock = vi.fn().mockResolvedValue({});
       setSqsClient({ send: sqsSendMock } as unknown as SQSClient);
 
-      for (const [attempt, expectedVisibility] of [
-        ['1', 10],
-        ['2', 20],
-        ['3', 40],
+      for (const [attempt, minVisibility, maxVisibility] of [
+        ['1', 5, 10],
+        ['2', 10, 20],
+        ['3', 20, 40],
       ] as const) {
         sqsSendMock.mockClear();
         const event: SQSEvent = {
@@ -303,7 +411,8 @@ describe('Failure Handling, SQS Retries, Exponential Backoff & DLQ Replay', () =
 
         const visCmd = sqsSendMock.mock.calls[0][0] as ChangeMessageVisibilityCommand;
         expect(visCmd).toBeInstanceOf(ChangeMessageVisibilityCommand);
-        expect(visCmd.input.VisibilityTimeout).toBe(expectedVisibility);
+        expect(visCmd.input.VisibilityTimeout).toBeGreaterThanOrEqual(minVisibility);
+        expect(visCmd.input.VisibilityTimeout).toBeLessThanOrEqual(maxVisibility);
       }
     });
 
@@ -356,13 +465,119 @@ describe('Failure Handling, SQS Retries, Exponential Backoff & DLQ Replay', () =
         received: 3,
         delivered: 1,
         pruned: 1,
+        quarantined: 0,
         failed: 1,
+        stoppedEarly: false,
       });
 
       const deleteCalls = sqsSendMock.mock.calls
         .map((c) => c[0])
         .filter((c): c is DeleteMessageCommand => c instanceof DeleteMessageCommand);
       expect(deleteCalls.map((c) => c.input.ReceiptHandle)).toEqual(['rh-1', 'rh-2']);
+    });
+
+    it('stops safely when replay approaches Lambda timeout', async () => {
+      const msg1 = makeRetryPayload({ connectionId: 'conn-1', messageId: 'm1' });
+      const msg2 = makeRetryPayload({ connectionId: 'conn-2', messageId: 'm2' });
+      const postSpy = vi.spyOn(shared, 'postToConnection').mockResolvedValue(true);
+
+      let remainingMs = 30_000;
+      const sqsSendMock = vi.fn().mockImplementation(async (cmd: unknown) => {
+        if (cmd instanceof ReceiveMessageCommand) {
+          return {
+            Messages: [
+              { MessageId: 'dlq-1', ReceiptHandle: 'rh-1', Body: JSON.stringify(msg1) },
+              { MessageId: 'dlq-2', ReceiptHandle: 'rh-2', Body: JSON.stringify(msg2) },
+            ],
+          };
+        }
+        return {};
+      });
+      setSqsClient({ send: sqsSendMock } as unknown as SQSClient);
+
+      const result = await fanoutReplayHandler({ maxMessages: 10, timeoutBufferMs: 5000 }, {
+        getRemainingTimeInMillis: () => {
+          const current = remainingMs;
+          remainingMs -= 13_000; // 30s -> 17s (msg1 ok) -> 4s (stops before msg2)
+          return current;
+        },
+      } as Context);
+
+      expect(result.stoppedEarly).toBe(true);
+      expect(result.delivered).toBe(1);
+      expect(postSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('quarantines and deletes malformed DLQ messages', async () => {
+      const sqsSendMock = vi.fn().mockImplementation(async (cmd: unknown) => {
+        if (cmd instanceof ReceiveMessageCommand) {
+          if (
+            sqsSendMock.mock.calls.filter((c) => c[0] instanceof ReceiveMessageCommand).length === 1
+          ) {
+            return {
+              Messages: [
+                { MessageId: 'dlq-bad-json', ReceiptHandle: 'rh-bad', Body: '{broken' },
+                {
+                  MessageId: 'dlq-bad-schema',
+                  ReceiptHandle: 'rh-schema',
+                  Body: JSON.stringify({ missingFields: true }),
+                },
+              ],
+            };
+          }
+          return { Messages: [] };
+        }
+        return {};
+      });
+      setSqsClient({ send: sqsSendMock } as unknown as SQSClient);
+
+      const result = await fanoutReplayHandler({ maxMessages: 10 });
+      expect(result).toEqual({
+        received: 2,
+        delivered: 0,
+        pruned: 0,
+        quarantined: 2,
+        failed: 0,
+        stoppedEarly: false,
+      });
+
+      const deleteCalls = sqsSendMock.mock.calls
+        .map((c) => c[0])
+        .filter((c): c is DeleteMessageCommand => c instanceof DeleteMessageCommand);
+      expect(deleteCalls.map((c) => c.input.ReceiptHandle)).toEqual(['rh-bad', 'rh-schema']);
+    });
+
+    it('continues safely if DeleteMessage fails after successful replay', async () => {
+      const msg1 = makeRetryPayload({ connectionId: 'conn-1', messageId: 'm1' });
+      vi.spyOn(shared, 'postToConnection').mockResolvedValue(true);
+
+      const sqsSendMock = vi.fn().mockImplementation(async (cmd: unknown) => {
+        if (cmd instanceof ReceiveMessageCommand) {
+          if (
+            sqsSendMock.mock.calls.filter((c) => c[0] instanceof ReceiveMessageCommand).length === 1
+          ) {
+            return {
+              Messages: [{ MessageId: 'dlq-1', ReceiptHandle: 'rh-1', Body: JSON.stringify(msg1) }],
+            };
+          }
+          return { Messages: [] };
+        }
+        if (cmd instanceof DeleteMessageCommand) {
+          throw new Error('SQS DeleteMessage failed');
+        }
+        return {};
+      });
+      setSqsClient({ send: sqsSendMock } as unknown as SQSClient);
+
+      const result = await fanoutReplayHandler({ maxMessages: 10 });
+      expect(result).toEqual({
+        received: 1,
+        delivered: 1,
+        pruned: 0,
+        quarantined: 0,
+        failed: 0,
+        stoppedEarly: false,
+      });
     });
   });
 });

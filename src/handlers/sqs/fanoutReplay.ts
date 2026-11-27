@@ -1,4 +1,5 @@
 import { DeleteMessageCommand, ReceiveMessageCommand, type SQSClient } from '@aws-sdk/client-sqs';
+import type { Context } from 'aws-lambda';
 import {
   type FanoutRetryMessage,
   getSqsClient,
@@ -7,10 +8,16 @@ import {
   SQS_MAX_BATCH_SIZE,
 } from '../../shared';
 
+export const DEFAULT_REPLAY_MAX_MESSAGES = 25;
+export const DEFAULT_REPLAY_VISIBILITY_TIMEOUT_SECONDS = 60;
+export const DEFAULT_REPLAY_TIMEOUT_BUFFER_MS = 5000;
+
 export interface ReplayDlqInput {
   maxMessages?: number;
   dlqUrl?: string;
   visibilityTimeoutSeconds?: number;
+  timeoutBufferMs?: number;
+  getRemainingTimeInMillis?: () => number;
   client?: SQSClient;
 }
 
@@ -18,13 +25,30 @@ export interface ReplayDlqResult {
   received: number;
   delivered: number;
   pruned: number;
+  quarantined: number;
   failed: number;
+  stoppedEarly: boolean;
+}
+
+function isValidRetryMessage(value: unknown): value is FanoutRetryMessage {
+  if (!value || typeof value !== 'object') return false;
+  const msg = value as Partial<FanoutRetryMessage>;
+  return (
+    typeof msg.connectionId === 'string' &&
+    msg.connectionId.length > 0 &&
+    typeof msg.userId === 'string' &&
+    typeof msg.endpoint === 'string' &&
+    msg.endpoint.length > 0 &&
+    msg.payload !== undefined &&
+    typeof msg.payload === 'object'
+  );
 }
 
 /**
  * Drains messages from the fan-out DLQ and replays delivery to WebSocket connections.
- * Successfully delivered or 410-pruned messages are deleted from the DLQ;
- * messages that still fail remain in the DLQ for later inspection or replay.
+ * - Stops safely before approaching Lambda timeout.
+ * - Quarantines (logs + deletes) malformed DLQ messages so they do not poison future replays.
+ * - Deletes delivered or 410-pruned messages; still-failing valid messages remain in the DLQ.
  */
 export async function replayDlqMessages(input: ReplayDlqInput = {}): Promise<ReplayDlqResult> {
   const dlqUrl = input.dlqUrl || process.env.FANOUT_RETRY_DLQ_URL;
@@ -32,16 +56,34 @@ export async function replayDlqMessages(input: ReplayDlqInput = {}): Promise<Rep
     throw new Error('FANOUT_RETRY_DLQ_URL is not configured');
   }
 
-  const maxMessages = Math.max(1, input.maxMessages ?? 100);
-  const visibilityTimeoutSeconds = input.visibilityTimeoutSeconds ?? 30;
+  const maxMessages = Math.max(1, input.maxMessages ?? DEFAULT_REPLAY_MAX_MESSAGES);
+  const visibilityTimeoutSeconds =
+    input.visibilityTimeoutSeconds ?? DEFAULT_REPLAY_VISIBILITY_TIMEOUT_SECONDS;
+  const timeoutBufferMs = input.timeoutBufferMs ?? DEFAULT_REPLAY_TIMEOUT_BUFFER_MS;
+  const getRemainingTime = input.getRemainingTimeInMillis;
   const client = input.client || getSqsClient();
 
   let received = 0;
   let delivered = 0;
   let pruned = 0;
+  let quarantined = 0;
   let failed = 0;
+  let stoppedEarly = false;
+
+  const isNearTimeout = (): boolean =>
+    typeof getRemainingTime === 'function' && getRemainingTime() <= timeoutBufferMs;
 
   while (received < maxMessages) {
+    if (isNearTimeout()) {
+      stoppedEarly = true;
+      logger.warn('DLQ replay stopping early to avoid Lambda timeout', {
+        dlqUrl,
+        received,
+        remainingTimeMs: getRemainingTime?.(),
+      });
+      break;
+    }
+
     const batchLimit = Math.min(SQS_MAX_BATCH_SIZE, maxMessages - received);
     const response = await client.send(
       new ReceiveMessageCommand({
@@ -58,24 +100,68 @@ export async function replayDlqMessages(input: ReplayDlqInput = {}): Promise<Rep
     }
 
     for (const msg of messages) {
+      if (isNearTimeout()) {
+        stoppedEarly = true;
+        logger.warn('DLQ replay stopping mid-batch to avoid Lambda timeout', {
+          dlqUrl,
+          received,
+          remainingTimeMs: getRemainingTime?.(),
+        });
+        break;
+      }
+
       received++;
       if (!msg.Body || !msg.ReceiptHandle) {
+        logger.error('DLQ message missing Body or ReceiptHandle; skipping', undefined, {
+          sqsMessageId: msg.MessageId,
+        });
         failed++;
         continue;
       }
 
-      let item: FanoutRetryMessage;
+      let parsed: unknown;
       try {
-        item = JSON.parse(msg.Body) as FanoutRetryMessage;
+        parsed = JSON.parse(msg.Body);
       } catch (parseError) {
         logger.error(
-          'Invalid DLQ message JSON during replay',
+          'Quarantining malformed JSON DLQ message',
           parseError instanceof Error ? parseError : new Error(String(parseError)),
-          { sqsMessageId: msg.MessageId },
+          { sqsMessageId: msg.MessageId, bodyPreview: msg.Body.slice(0, 200) },
         );
-        failed++;
+        try {
+          await client.send(
+            new DeleteMessageCommand({ QueueUrl: dlqUrl, ReceiptHandle: msg.ReceiptHandle }),
+          );
+        } catch (deleteError) {
+          logger.warn('Failed to delete quarantined malformed DLQ message', {
+            sqsMessageId: msg.MessageId,
+            error: deleteError instanceof Error ? deleteError.message : String(deleteError),
+          });
+        }
+        quarantined++;
         continue;
       }
+
+      if (!isValidRetryMessage(parsed)) {
+        logger.error('Quarantining DLQ message with invalid schema', undefined, {
+          sqsMessageId: msg.MessageId,
+          bodyPreview: msg.Body.slice(0, 200),
+        });
+        try {
+          await client.send(
+            new DeleteMessageCommand({ QueueUrl: dlqUrl, ReceiptHandle: msg.ReceiptHandle }),
+          );
+        } catch (deleteError) {
+          logger.warn('Failed to delete quarantined invalid-schema DLQ message', {
+            sqsMessageId: msg.MessageId,
+            error: deleteError instanceof Error ? deleteError.message : String(deleteError),
+          });
+        }
+        quarantined++;
+        continue;
+      }
+
+      const item = parsed;
 
       try {
         const sent = await postToConnection({
@@ -85,12 +171,22 @@ export async function replayDlqMessages(input: ReplayDlqInput = {}): Promise<Rep
           endpoint: item.endpoint,
         });
 
-        await client.send(
-          new DeleteMessageCommand({
-            QueueUrl: dlqUrl,
-            ReceiptHandle: msg.ReceiptHandle,
-          }),
-        );
+        try {
+          await client.send(
+            new DeleteMessageCommand({
+              QueueUrl: dlqUrl,
+              ReceiptHandle: msg.ReceiptHandle,
+            }),
+          );
+        } catch (deleteError) {
+          logger.warn('DLQ replay delivered message but failed to delete from DLQ', {
+            sqsMessageId: msg.MessageId,
+            connectionId: item.connectionId,
+            roomId: item.roomId,
+            messageId: item.messageId,
+            error: deleteError instanceof Error ? deleteError.message : String(deleteError),
+          });
+        }
 
         if (sent) {
           delivered++;
@@ -108,6 +204,10 @@ export async function replayDlqMessages(input: ReplayDlqInput = {}): Promise<Rep
         });
       }
     }
+
+    if (stoppedEarly) {
+      break;
+    }
   }
 
   logger.info('DLQ replay completed', {
@@ -115,12 +215,24 @@ export async function replayDlqMessages(input: ReplayDlqInput = {}): Promise<Rep
     received,
     delivered,
     pruned,
+    quarantined,
     failed,
+    stoppedEarly,
   });
 
-  return { received, delivered, pruned, failed };
+  return { received, delivered, pruned, quarantined, failed, stoppedEarly };
 }
 
-export const handler = async (event: ReplayDlqInput = {}): Promise<ReplayDlqResult> => {
-  return replayDlqMessages(event);
+export const handler = async (
+  event: ReplayDlqInput = {},
+  context?: Context,
+): Promise<ReplayDlqResult> => {
+  return replayDlqMessages({
+    ...event,
+    getRemainingTimeInMillis:
+      event.getRemainingTimeInMillis ??
+      (typeof context?.getRemainingTimeInMillis === 'function'
+        ? () => context.getRemainingTimeInMillis()
+        : undefined),
+  });
 };
