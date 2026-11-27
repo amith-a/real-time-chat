@@ -1,5 +1,5 @@
 import type { APIGatewayProxyHandlerV2 } from 'aws-lambda';
-import { getUserProfile, listUsers, searchUsers, type UserProfileItem } from '../../repositories';
+import { getUserProfile, searchUsers, type UserProfileItem } from '../../repositories';
 import {
   BadRequestError,
   formatHttpResponse,
@@ -56,13 +56,11 @@ export function decodeCursor(cursor?: string): Record<string, unknown> | undefin
   const trimmed = cursor.trim();
   if (!trimmed) return undefined;
 
-  // 1. Verify standard Base64 encoding
   const base64Regex = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
   if (!base64Regex.test(trimmed)) {
     throw new BadRequestError('Invalid pagination cursor: not valid base64');
   }
 
-  // 2. Decode and parse JSON
   let parsed: unknown;
   try {
     const jsonStr = Buffer.from(trimmed, 'base64').toString('utf8');
@@ -71,7 +69,6 @@ export function decodeCursor(cursor?: string): Record<string, unknown> | undefin
     throw new BadRequestError('Invalid pagination cursor: malformed JSON payload');
   }
 
-  // 3. Validate decoded DynamoDB key structure
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new BadRequestError('Invalid pagination cursor: expected key object');
   }
@@ -100,9 +97,11 @@ export function decodeCursor(cursor?: string): Record<string, unknown> | undefin
   return key;
 }
 
+export const MIN_USER_SEARCH_QUERY_LENGTH = 3;
+
 export function encodeCursor(key?: Record<string, unknown>): string | undefined {
-  if (!key) return undefined;
-  return Buffer.from(JSON.stringify(key)).toString('base64');
+  if (!key || Object.keys(key).length === 0) return undefined;
+  return Buffer.from(JSON.stringify(key), 'utf8').toString('base64');
 }
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
@@ -116,7 +115,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const method = event.requestContext.http.method.toUpperCase();
     const rawPath = event.rawPath || '';
 
-    // Handle CORS preflight if invoked directly
     if (method === 'OPTIONS') {
       return formatHttpResponse(200, {});
     }
@@ -125,7 +123,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       throw new NotFoundError(`Method ${method} not allowed on ${rawPath}`);
     }
 
-    // Require authentication
     const authUser = getHttpAuthenticatedUser(event);
     const pathUserId = event.pathParameters?.userId;
 
@@ -152,20 +149,31 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     // 3. GET /users?query=...&limit=...&cursor=...
-    const query =
+    const query = (
       event.queryStringParameters?.query ||
       event.queryStringParameters?.search ||
       event.queryStringParameters?.q ||
-      '';
-    const limit = Math.min(
-      Math.max(Number.parseInt(event.queryStringParameters?.limit || '20', 10) || 20, 1),
-      100,
-    );
-    const startKey = decodeCursor(event.queryStringParameters?.cursor);
+      ''
+    ).trim();
 
-    const page = query.trim()
-      ? await searchUsers(query, { limit, startKey })
-      : await listUsers({ limit, startKey });
+    if (query.length < MIN_USER_SEARCH_QUERY_LENGTH) {
+      throw new BadRequestError(
+        `Search query must be at least ${MIN_USER_SEARCH_QUERY_LENGTH} characters`,
+      );
+    }
+
+    let limit = 20;
+    const limitParam = event.queryStringParameters?.limit;
+    if (limitParam !== undefined && limitParam !== '') {
+      const parsedLimit = Number(limitParam);
+      if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
+        throw new BadRequestError('limit must be an integer between 1 and 100');
+      }
+      limit = Math.min(parsedLimit, 100);
+    }
+
+    const startKey = decodeCursor(event.queryStringParameters?.cursor);
+    const page = await searchUsers(query, { limit, startKey });
 
     return formatHttpResponse(200, {
       items: page.items.map(toPublicUserDto),

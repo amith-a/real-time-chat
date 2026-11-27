@@ -7,6 +7,7 @@ import {
 } from '../../repositories';
 import {
   BadRequestError,
+  checkConnectionRateLimit,
   DEFAULT_DYNAMODB_CONCURRENCY,
   DEFAULT_GATEWAY_CONCURRENCY,
   ForbiddenError,
@@ -36,6 +37,15 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
 
   try {
     const { connectionId, domainName, stage } = getWebSocketContext(event);
+
+    const maxTypingPerWindow = Number(process.env.TYPING_RATE_LIMIT_MAX ?? 20);
+    const rateWindowMs = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 10_000);
+    checkConnectionRateLimit({
+      connectionId,
+      routeKey: 'typing',
+      maxRequests: Number.isFinite(maxTypingPerWindow) ? maxTypingPerWindow : 20,
+      windowMs: Number.isFinite(rateWindowMs) ? rateWindowMs : 10_000,
+    });
 
     const rawBody = parseJsonBody<unknown>(event);
     const parseResult = typingSchema.safeParse(rawBody);

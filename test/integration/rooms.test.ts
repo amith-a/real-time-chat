@@ -19,7 +19,6 @@ import {
   ConflictError,
   ForbiddenError,
   type HttpResponse,
-  InternalServerError,
   NotFoundError,
 } from '../../src/shared';
 import { createTestTable, now, pollUntil, safeTeardown } from './helpers';
@@ -235,7 +234,7 @@ describe('rooms (DynamoDB Local)', () => {
           name: 'Team Alpha',
           members: differentMembers,
         }),
-      ).rejects.toBeInstanceOf(InternalServerError);
+      ).rejects.toBeInstanceOf(ConflictError);
     });
 
     it('rejects duplicate creation with different member count', async () => {
@@ -247,7 +246,7 @@ describe('rooms (DynamoDB Local)', () => {
           name: 'Team Alpha',
           members: moreMembers,
         }),
-      ).rejects.toBeInstanceOf(InternalServerError);
+      ).rejects.toBeInstanceOf(ConflictError);
     });
 
     it('rejects duplicate creation with different member role', async () => {
@@ -262,7 +261,7 @@ describe('rooms (DynamoDB Local)', () => {
           name: 'Team Alpha',
           members: changedRoles,
         }),
-      ).rejects.toBeInstanceOf(InternalServerError);
+      ).rejects.toBeInstanceOf(ConflictError);
     });
 
     it('rejects duplicate creation with different creator', async () => {
@@ -273,7 +272,7 @@ describe('rooms (DynamoDB Local)', () => {
           name: 'Team Alpha',
           members: baseMembers,
         }),
-      ).rejects.toBeInstanceOf(InternalServerError);
+      ).rejects.toBeInstanceOf(ConflictError);
     });
 
     it('rejects duplicate creation with different name', async () => {
@@ -284,7 +283,7 @@ describe('rooms (DynamoDB Local)', () => {
           name: 'Completely Different Name',
           members: baseMembers,
         }),
-      ).rejects.toBeInstanceOf(InternalServerError);
+      ).rejects.toBeInstanceOf(ConflictError);
     });
   });
 
@@ -512,7 +511,7 @@ describe('rooms (DynamoDB Local)', () => {
       expect(rejected).toHaveLength(1);
       expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(BadRequestError);
       expect((rejected[0] as PromiseRejectedResult).reason.message).toMatch(
-        /Cannot remove the last member/,
+        /Cannot remove the last (member|admin)/,
       );
 
       // Exactly 1 member remains, and memberCount is exactly 1 (never 0)

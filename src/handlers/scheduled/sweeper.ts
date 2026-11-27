@@ -24,7 +24,7 @@ export interface SweeperRunResult {
  * of presence truth; DynamoDB TTL is only used for garbage collection.
  *
  * Note on table growth: `scanStaleConnections` reads the full table. Set
- * `SWEEPER_MAX_PAGES` to bound per-invocation work; evaluate a sparse GSI2 in Phase 14.
+ * `SWEEPER_MAX_PAGES` to bound per-invocation work; evaluate a sparse GSI2 under load testing.
  */
 export async function runSweeper(nowMs = Date.now()): Promise<SweeperRunResult> {
   const timeoutMs = getStaleConnectionTimeoutMs();

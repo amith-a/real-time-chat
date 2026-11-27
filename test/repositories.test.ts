@@ -702,7 +702,7 @@ describe('DynamoDB Repository Layer', () => {
       ).rejects.toThrow(InternalServerError);
     });
 
-    it('throws InternalServerError when group room exists but a requested membership is missing', async () => {
+    it('succeeds on retry even when mutable membership changed after creation', async () => {
       const cancelError = createCancelError([{ Code: 'ConditionalCheckFailed' }]);
       const members = [
         { userId: 'u1', role: 'ADMIN' as const },
@@ -716,26 +716,23 @@ describe('DynamoDB Repository Layer', () => {
             roomId: 'g1',
             roomType: 'GROUP',
             createdBy: 'admin-1',
-            memberCount: 2,
+            memberCount: 3, // Changed by subsequent addMember
             membershipHash: hashMembership(members),
           },
         })
-        .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } })
-        .mockResolvedValueOnce({
-          Item: { userId: 'u1', roomId: 'g1', role: 'ADMIN' },
-        })
-        .mockResolvedValueOnce({ Item: undefined }); // Missing member u2
+        .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } });
 
-      await expect(
-        createGroupRoom({
-          roomId: 'g1',
-          createdBy: 'admin-1',
-          members,
-        }),
-      ).rejects.toThrow(InternalServerError);
+      const res = await createGroupRoom({
+        roomId: 'g1',
+        createdBy: 'admin-1',
+        members,
+      });
+
+      expect(res.created).toBe(false);
+      expect(res.room.memberCount).toBe(3);
     });
 
-    it('throws InternalServerError when existing group room has a different creator', async () => {
+    it('throws ConflictError when existing group room has a different creator', async () => {
       const cancelError = createCancelError([{ Code: 'ConditionalCheckFailed' }]);
       const members = [{ userId: 'u1', role: 'ADMIN' as const }];
 
@@ -750,10 +747,7 @@ describe('DynamoDB Repository Layer', () => {
             membershipHash: hashMembership(members),
           },
         })
-        .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } })
-        .mockResolvedValueOnce({
-          Item: { userId: 'u1', roomId: 'g1', role: 'ADMIN' },
-        });
+        .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } });
 
       await expect(
         createGroupRoom({
@@ -761,10 +755,10 @@ describe('DynamoDB Repository Layer', () => {
           createdBy: 'admin-1',
           members,
         }),
-      ).rejects.toThrow(InternalServerError);
+      ).rejects.toThrow(ConflictError);
     });
 
-    it('throws InternalServerError when existing group room has a different room type', async () => {
+    it('throws ConflictError when existing group room has a different room type', async () => {
       const cancelError = createCancelError([{ Code: 'ConditionalCheckFailed' }]);
       const members = [{ userId: 'u1', role: 'ADMIN' as const }];
 
@@ -779,10 +773,7 @@ describe('DynamoDB Repository Layer', () => {
             membershipHash: hashMembership(members),
           },
         })
-        .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } })
-        .mockResolvedValueOnce({
-          Item: { userId: 'u1', roomId: 'g1', role: 'ADMIN' },
-        });
+        .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } });
 
       await expect(
         createGroupRoom({
@@ -790,40 +781,10 @@ describe('DynamoDB Repository Layer', () => {
           createdBy: 'admin-1',
           members,
         }),
-      ).rejects.toThrow(InternalServerError);
+      ).rejects.toThrow(ConflictError);
     });
 
-    it('throws InternalServerError when existing group room has different membership roles', async () => {
-      const cancelError = createCancelError([{ Code: 'ConditionalCheckFailed' }]);
-      const members = [{ userId: 'u1', role: 'ADMIN' as const }];
-
-      mockSend
-        .mockRejectedValueOnce(cancelError)
-        .mockResolvedValueOnce({
-          Item: {
-            roomId: 'g1',
-            roomType: 'GROUP',
-            createdBy: 'admin-1',
-            memberCount: 1,
-            membershipHash: hashMembership(members),
-          },
-        })
-        .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } })
-        // Existing has MEMBER role, but requested role was ADMIN
-        .mockResolvedValueOnce({
-          Item: { userId: 'u1', roomId: 'g1', role: 'MEMBER' },
-        });
-
-      await expect(
-        createGroupRoom({
-          roomId: 'g1',
-          createdBy: 'admin-1',
-          members,
-        }),
-      ).rejects.toThrow(InternalServerError);
-    });
-
-    it('throws InternalServerError when existing group room has a different name', async () => {
+    it('throws ConflictError when existing group room has a different name', async () => {
       const cancelError = createCancelError([{ Code: 'ConditionalCheckFailed' }]);
       const members = [{ userId: 'u1', role: 'ADMIN' as const }];
 
@@ -839,10 +800,7 @@ describe('DynamoDB Repository Layer', () => {
             membershipHash: hashMembership(members),
           },
         })
-        .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } })
-        .mockResolvedValueOnce({
-          Item: { userId: 'u1', roomId: 'g1', role: 'ADMIN' },
-        });
+        .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } });
 
       await expect(
         createGroupRoom({
@@ -851,7 +809,7 @@ describe('DynamoDB Repository Layer', () => {
           createdBy: 'admin-1',
           members,
         }),
-      ).rejects.toThrow(InternalServerError);
+      ).rejects.toThrow(ConflictError);
     });
 
     it('rejects duplicate member user IDs in createGroupRoom', async () => {
@@ -1163,7 +1121,7 @@ describe('DynamoDB Repository Layer', () => {
     expect(res.room.roomType).toBe('GROUP');
   });
 
-  it('throws InternalServerError when existing group room has a different member count', async () => {
+  it('succeeds on retry when existing group room has a different memberCount after membership change', async () => {
     const cancelError = createCancelError([{ Code: 'ConditionalCheckFailed' }]);
     const members = [{ userId: 'u1', role: 'ADMIN' as const }];
 
@@ -1174,25 +1132,22 @@ describe('DynamoDB Repository Layer', () => {
           roomId: 'g1',
           roomType: 'GROUP',
           createdBy: 'admin-1',
-          memberCount: 2, // Different count
+          memberCount: 2, // Changed count
           membershipHash: hashMembership(members),
         },
       })
-      .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } })
-      .mockResolvedValueOnce({
-        Item: { userId: 'u1', roomId: 'g1', role: 'ADMIN' },
-      });
+      .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } });
 
-    await expect(
-      createGroupRoom({
-        roomId: 'g1',
-        createdBy: 'admin-1',
-        members,
-      }),
-    ).rejects.toThrow(InternalServerError);
+    const res = await createGroupRoom({
+      roomId: 'g1',
+      createdBy: 'admin-1',
+      members,
+    });
+    expect(res.created).toBe(false);
+    expect(res.room.memberCount).toBe(2);
   });
 
-  it('throws InternalServerError when existing group room has a different membership hash', async () => {
+  it('throws ConflictError when existing group room has a different membership hash', async () => {
     const cancelError = createCancelError([{ Code: 'ConditionalCheckFailed' }]);
     const members = [{ userId: 'u1', role: 'ADMIN' as const }];
 
@@ -1207,10 +1162,7 @@ describe('DynamoDB Repository Layer', () => {
           membershipHash: 'different-hash-value',
         },
       })
-      .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } })
-      .mockResolvedValueOnce({
-        Item: { userId: 'u1', roomId: 'g1', role: 'ADMIN' },
-      });
+      .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } });
 
     await expect(
       createGroupRoom({
@@ -1218,39 +1170,10 @@ describe('DynamoDB Repository Layer', () => {
         createdBy: 'admin-1',
         members,
       }),
-    ).rejects.toThrow(InternalServerError);
+    ).rejects.toThrow(ConflictError);
   });
 
-  it('throws InternalServerError when existing group room has missing memberCount', async () => {
-    const cancelError = createCancelError([{ Code: 'ConditionalCheckFailed' }]);
-    const members = [{ userId: 'u1', role: 'ADMIN' as const }];
-
-    mockSend
-      .mockRejectedValueOnce(cancelError)
-      .mockResolvedValueOnce({
-        Item: {
-          roomId: 'g1',
-          roomType: 'GROUP',
-          createdBy: 'admin-1',
-          // memberCount missing
-          membershipHash: hashMembership(members),
-        },
-      })
-      .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } })
-      .mockResolvedValueOnce({
-        Item: { userId: 'u1', roomId: 'g1', role: 'ADMIN' },
-      });
-
-    await expect(
-      createGroupRoom({
-        roomId: 'g1',
-        createdBy: 'admin-1',
-        members,
-      }),
-    ).rejects.toThrow(InternalServerError);
-  });
-
-  it('throws InternalServerError when existing group room has missing membershipHash', async () => {
+  it('throws ConflictError when existing group room has missing membershipHash', async () => {
     const cancelError = createCancelError([{ Code: 'ConditionalCheckFailed' }]);
     const members = [{ userId: 'u1', role: 'ADMIN' as const }];
 
@@ -1265,10 +1188,7 @@ describe('DynamoDB Repository Layer', () => {
           // membershipHash missing
         },
       })
-      .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } })
-      .mockResolvedValueOnce({
-        Item: { userId: 'u1', roomId: 'g1', role: 'ADMIN' },
-      });
+      .mockResolvedValueOnce({ Item: { sequenceNumber: 0 } });
 
     await expect(
       createGroupRoom({
@@ -1276,7 +1196,7 @@ describe('DynamoDB Repository Layer', () => {
         createdBy: 'admin-1',
         members,
       }),
-    ).rejects.toThrow(InternalServerError);
+    ).rejects.toThrow(ConflictError);
   });
 
   it('throws InternalServerError when existing group room has missing metadata', async () => {

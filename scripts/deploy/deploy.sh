@@ -166,7 +166,7 @@ aws cloudformation deploy \
     UsersArtifactKey="$USERS_ARTIFACT_KEY" \
     MessagesArtifactKey="$MESSAGES_ARTIFACT_KEY" \
     RoomsArtifactKey="$ROOMS_ARTIFACT_KEY" \
-  --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+  --capabilities CAPABILITY_NAMED_IAM \
   --region "$REGION" \
   --no-fail-on-empty-changeset
 

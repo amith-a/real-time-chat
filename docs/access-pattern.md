@@ -1,6 +1,6 @@
 # DynamoDB Data Model and Access Patterns
 
-> **Phase 4 deliverable — design reference for developers**
+> **Design reference for developers**
 >
 > This document explains how application data is represented in DynamoDB, why the keys and index are shaped this way, and how the main application workflows read and write that data. It is the source of truth for the DynamoDB data model and access patterns.
 
@@ -518,7 +518,7 @@ Sweeper workflow:
 
 Do not use TTL as the presence or connection-state mechanism.
 
-**Cost trade-off:** Scan cost scales with the entire table, including message items. In Phase 14, record table item count, scan duration, items evaluated, stale connections found, and consumed read capacity where available. Switch to a sparse GSI containing connection items only if those measurements show that Scan cost or duration is unacceptable.
+**Cost trade-off:** Scan cost scales with the entire table, including message items. During load testing, record table item count, scan duration, items evaluated, stale connections found, and consumed read capacity where available. Switch to a sparse GSI containing connection items only if those measurements show that Scan cost or duration is unacceptable.
 
 ## 11. Message fan-out
 
@@ -553,9 +553,9 @@ Steps:
 
 GSI1 is eventually consistent. A newly added member may not immediately appear in the fan-out query. This is a known consistency characteristic to account for in the workflow.
 
-Phase 9 should measure query count, latency (including p50/p95), member count, active connection count, stale connections, and delivery errors. Consider per-room connection records only if measurements justify the extra write/storage complexity.
+Benchmarks should measure query count, latency (including p50/p95), member count, active connection count, stale connections, and delivery errors. Consider per-room connection records only if measurements justify the extra write/storage complexity.
 
-## 12. Phase 11 delivery and recovery context
+## 12. Message delivery and recovery context
 
 DynamoDB sequence numbers establish authoritative per-room order, but they do not guarantee network arrival order or exactly-once delivery.
 

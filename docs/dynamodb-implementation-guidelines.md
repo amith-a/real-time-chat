@@ -66,7 +66,7 @@
 
 The initial stale-connection sweeper uses a paginated Scan. This is a deliberate initial trade-off, not a general retrieval strategy.
 
-In Phase 14, record:
+During load testing, record:
 
 - Total table item count.
 - Scan duration.
@@ -124,7 +124,7 @@ This file does not define:
 - Unit/integration test cases or fixtures.
 - Lambda handler and API Gateway route implementation.
 - Infrastructure deployment configuration.
-- Phase 14 benchmark results.
+- Load-test benchmark results.
 - SQS retry, DLQ, and replay implementation details.
 
 Those belong to their respective project phases and documents.

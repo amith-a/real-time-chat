@@ -10,6 +10,7 @@ export type ErrorCode =
   | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'CONFLICT'
+  | 'TOO_MANY_REQUESTS'
   | 'INTERNAL_ERROR';
 
 export class AppError extends Error {
@@ -78,6 +79,12 @@ export class NotFoundError extends AppError {
 export class ConflictError extends AppError {
   constructor(message = 'Conflict', details?: Record<string, unknown>) {
     super(message, 409, details, true, 'CONFLICT');
+  }
+}
+
+export class TooManyRequestsError extends AppError {
+  constructor(message = 'Too Many Requests', details?: Record<string, unknown>) {
+    super(message, 429, details, true, 'TOO_MANY_REQUESTS');
   }
 }
 

@@ -5,6 +5,7 @@ export * from './errors';
 export * from './logger';
 export * from './management-api';
 export * from './presence';
+export * from './rate-limit';
 export * from './responses';
 export * from './schemas';
 export * from './sqs-fanout';

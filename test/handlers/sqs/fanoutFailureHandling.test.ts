@@ -69,7 +69,7 @@ function makeSqsRecord(id: string, body: string, approximateReceiveCount = '1'):
   };
 }
 
-describe('Phase 12: Failure Handling, SQS Retries, Exponential Backoff & DLQ Replay', () => {
+describe('Failure Handling, SQS Retries, Exponential Backoff & DLQ Replay', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {

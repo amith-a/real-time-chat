@@ -51,10 +51,11 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
       } catch (dbError) {
         // If removeConnection exhausts its retries on TransactionConflict or transient errors,
         // log the error and leave cleanup to the sweeper, because API Gateway ignores $disconnect responses.
-        log.warn('Failed to remove connection during $disconnect; leaving to sweeper', {
-          connectionId,
-          error: dbError instanceof Error ? dbError.message : String(dbError),
-        });
+        log.error(
+          'Failed to remove connection during $disconnect; leaving to sweeper',
+          dbError instanceof Error ? dbError : new Error(String(dbError)),
+          { connectionId },
+        );
       }
     }
 

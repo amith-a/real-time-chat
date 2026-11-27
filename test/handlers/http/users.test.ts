@@ -217,62 +217,25 @@ describe('Users HTTP Handler', () => {
     });
   });
 
-  describe('GET /users (Directory & Search)', () => {
-    it('lists users returning public DTOs when no query is specified', async () => {
-      const mockUsers: repositories.UserProfileItem[] = [
-        {
-          PK: 'USER#1',
-          SK: 'PROFILE',
-          userId: '1',
-          username: 'alice',
-          displayName: 'Alice',
-          email: 'alice@example.com',
-          createdAt: '',
-        },
-        {
-          PK: 'USER#2',
-          SK: 'PROFILE',
-          userId: '2',
-          username: 'bob',
-          displayName: 'Bob',
-          email: 'bob@example.com',
-          createdAt: '',
-        },
-      ];
-      const listSpy = vi.spyOn(repositories, 'listUsers').mockResolvedValue({
-        items: mockUsers,
-        nextKey: { PK: 'USER#2', GSI1PK: 'USERS' },
-      });
+  describe('GET /users (Search)', () => {
+    it('returns 400 when search query is missing or shorter than 3 characters', async () => {
+      for (const queryStringParameters of [
+        undefined,
+        { query: '' },
+        { query: 'a' },
+        { query: 'ab' },
+      ]) {
+        const event = createHttpEvent({
+          rawPath: '/users',
+          queryStringParameters,
+        });
+        const res = (await usersHandler(event, mockContext, mockCallback)) as HttpResponse;
 
-      const event = createHttpEvent({
-        rawPath: '/users',
-        queryStringParameters: { limit: '10' },
-      });
-      const res = (await usersHandler(event, mockContext, mockCallback)) as HttpResponse;
-
-      expect(res.statusCode).toBe(200);
-      const data = JSON.parse(res.body);
-      expect(data.items).toHaveLength(2);
-      expect(data.items[0]).toEqual({
-        userId: '1',
-        username: 'alice',
-        displayName: 'Alice',
-      });
-      expect(data.items[0]).not.toHaveProperty('email');
-      expect(data.items[0]).not.toHaveProperty('PK');
-      expect(data.items[1]).toEqual({
-        userId: '2',
-        username: 'bob',
-        displayName: 'Bob',
-      });
-      expect(data.items[1]).not.toHaveProperty('email');
-      expect(data.hasMore).toBe(true);
-      expect(data.nextCursor).toBeDefined();
-
-      expect(listSpy).toHaveBeenCalledWith({
-        limit: 10,
-        startKey: undefined,
-      });
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body).message).toContain(
+          'Search query must be at least 3 characters',
+        );
+      }
     });
 
     it('searches users by query prefix returning public DTOs without email leak', async () => {
@@ -316,7 +279,7 @@ describe('Users HTTP Handler', () => {
     });
 
     it('decodes valid base64 pagination cursor properly', async () => {
-      const listSpy = vi.spyOn(repositories, 'listUsers').mockResolvedValue({
+      const searchSpy = vi.spyOn(repositories, 'searchUsers').mockResolvedValue({
         items: [],
         nextKey: undefined,
       });
@@ -326,11 +289,11 @@ describe('Users HTTP Handler', () => {
 
       const event = createHttpEvent({
         rawPath: '/users',
-        queryStringParameters: { cursor },
+        queryStringParameters: { query: 'ali', cursor },
       });
       await usersHandler(event, mockContext, mockCallback);
 
-      expect(listSpy).toHaveBeenCalledWith({
+      expect(searchSpy).toHaveBeenCalledWith('ali', {
         limit: 20,
         startKey: rawKey,
       });
@@ -339,7 +302,7 @@ describe('Users HTTP Handler', () => {
     it('returns 400 when cursor is not valid base64', async () => {
       const event = createHttpEvent({
         rawPath: '/users',
-        queryStringParameters: { cursor: 'invalid!base64===' },
+        queryStringParameters: { query: 'ali', cursor: 'invalid!base64===' },
       });
       const res = (await usersHandler(event, mockContext, mockCallback)) as HttpResponse;
 
@@ -351,7 +314,7 @@ describe('Users HTTP Handler', () => {
       const invalidJsonCursor = Buffer.from('not-json').toString('base64');
       const event = createHttpEvent({
         rawPath: '/users',
-        queryStringParameters: { cursor: invalidJsonCursor },
+        queryStringParameters: { query: 'ali', cursor: invalidJsonCursor },
       });
       const res = (await usersHandler(event, mockContext, mockCallback)) as HttpResponse;
 
@@ -365,7 +328,7 @@ describe('Users HTTP Handler', () => {
       const emptyKeyCursor = Buffer.from(JSON.stringify({})).toString('base64');
       const event = createHttpEvent({
         rawPath: '/users',
-        queryStringParameters: { cursor: emptyKeyCursor },
+        queryStringParameters: { query: 'ali', cursor: emptyKeyCursor },
       });
       const res = (await usersHandler(event, mockContext, mockCallback)) as HttpResponse;
 
@@ -377,7 +340,7 @@ describe('Users HTTP Handler', () => {
       const invalidKeyCursor = Buffer.from(JSON.stringify({ someAttr: 'val' })).toString('base64');
       const event2 = createHttpEvent({
         rawPath: '/users',
-        queryStringParameters: { cursor: invalidKeyCursor },
+        queryStringParameters: { query: 'ali', cursor: invalidKeyCursor },
       });
       const res2 = (await usersHandler(event2, mockContext, mockCallback)) as HttpResponse;
 

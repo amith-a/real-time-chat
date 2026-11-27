@@ -139,7 +139,7 @@ async function main() {
     const recipientUsers = users.slice(1);
 
     console.log('='.repeat(64));
-    console.log('Phase 9 Real-World 50-Member WebSocket Fan-Out Benchmark');
+    console.log('Real-World 50-Member WebSocket Fan-Out Benchmark');
     console.log(`Run ID:              ${runId}`);
     console.log(`Table:               ${process.env.TABLE_NAME}`);
     console.log(`Benchmark Room:      ${roomId}`);

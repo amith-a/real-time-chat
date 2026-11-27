@@ -123,10 +123,11 @@ export async function postToConnection(input: PostToConnectionInput): Promise<bo
             await removeConnection({ userId: resolvedUserId, connectionId });
           }
         } catch (cleanupError) {
-          logger.warn('Failed to prune stale connection', {
-            connectionId,
-            error: cleanupError,
-          });
+          logger.error(
+            'Failed to prune stale connection',
+            cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)),
+            { connectionId, userId },
+          );
         }
       }
       return false;

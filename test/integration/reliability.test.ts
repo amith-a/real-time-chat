@@ -49,7 +49,7 @@ function makeWsEvent(options: {
   };
 }
 
-describe('Phase 11 Delivery Guarantees & Resume Integration (DynamoDB Local)', () => {
+describe('Delivery Guarantees & Resume Integration (DynamoDB Local)', () => {
   let table: string;
 
   beforeAll(async () => {

@@ -19,48 +19,43 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
     const { connectionId } = getWebSocketContext(event);
     const { userId, email, username } = getAuthenticatedUser(event);
 
-    if (process.env.TABLE_NAME) {
-      const now = event.requestContext.connectedAt
-        ? new Date(event.requestContext.connectedAt).toISOString()
-        : undefined;
+    const now = event.requestContext.connectedAt
+      ? new Date(event.requestContext.connectedAt).toISOString()
+      : undefined;
 
-      await ensureUserProfile({
-        userId,
-        email,
-        username,
-        now,
-      });
+    await ensureUserProfile({
+      userId,
+      email,
+      username,
+      now,
+    });
 
-      const result = await registerConnection({
-        userId,
-        connectionId,
-        now,
-      });
+    const result = await registerConnection({
+      userId,
+      connectionId,
+      now,
+    });
 
-      if (result.becameOnline && process.env.API_GATEWAY_MANAGEMENT_ENDPOINT) {
-        try {
-          await broadcastPresenceChange({
-            userId,
-            status: 'online',
-            lastSeenAt: now ?? new Date().toISOString(),
-            excludeConnectionId: connectionId,
-          });
-        } catch (presenceError) {
-          log.warn('Failed to broadcast online presence on $connect', {
-            userId,
-            error: presenceError instanceof Error ? presenceError.message : String(presenceError),
-          });
-        }
+    if (result.becameOnline && process.env.API_GATEWAY_MANAGEMENT_ENDPOINT) {
+      try {
+        await broadcastPresenceChange({
+          userId,
+          status: 'online',
+          lastSeenAt: now ?? new Date().toISOString(),
+          excludeConnectionId: connectionId,
+        });
+      } catch (presenceError) {
+        log.warn('Failed to broadcast online presence on $connect', {
+          userId,
+          error: presenceError instanceof Error ? presenceError.message : String(presenceError),
+        });
       }
-
-      log.info('WebSocket client connected', {
-        userId,
-        email,
-        duplicate: !result.registered,
-      });
-    } else {
-      log.info('WebSocket client connected', { userId, email });
     }
+
+    log.info('WebSocket client connected', {
+      userId,
+      duplicate: !result.registered,
+    });
 
     return formatResponse(200, 'Connected');
   } catch (error) {

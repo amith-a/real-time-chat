@@ -47,4 +47,4 @@ Use **Query String Parameter (`?token=<id_token>`)** for the initial connection 
 
 1. Never log raw JWTs or full WebSocket connection URLs containing the `token` parameter.
 2. Lambda authorizers must catch verification errors without outputting token contents into stdout.
-3. In Phase 13 (Observability), configure API Gateway access log format to omit or mask query parameters.
+3. Configure API Gateway access log format to omit or mask query parameters.

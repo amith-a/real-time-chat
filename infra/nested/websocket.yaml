@@ -111,6 +111,16 @@ Resources:
       ApiId: !Ref WebSocketApi
       StageName: !Ref Environment
       DeploymentId: !Ref WebSocketDeploymentV5
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+      RouteSettings:
+        sendMessage:
+          ThrottlingBurstLimit: 50
+          ThrottlingRateLimit: 25
+        typing:
+          ThrottlingBurstLimit: 50
+          ThrottlingRateLimit: 25
 
   # =========================================================================
   # Authorizer Lambda

@@ -329,7 +329,7 @@ export interface StaleCandidate {
 /**
  * AP17: paginated Scan for connections whose heartbeat is older than `cutoff`.
  * Yields one page of candidates at a time. The filter runs after items are read, so the cost
- * scales with the whole table (messages included). Measure it in Phase 14; if table growth
+ * scales with the whole table (messages included). Measure it during load testing; if table growth
  * makes Scan RCUs significant, migrate to a sparse GSI2 (`GSI2PK = 'ACTIVE_CONN'`, `GSI2SK = lastHeartbeat`).
  */
 export async function* scanStaleConnections(

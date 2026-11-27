@@ -135,12 +135,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const method = event.requestContext.http.method.toUpperCase();
     const rawPath = event.rawPath || '';
 
-    // 1. CORS Preflight
     if (method === 'OPTIONS') {
       return formatHttpResponse(200, {});
     }
 
-    // 2. Authenticate caller
     const authUser = getHttpAuthenticatedUser(event);
 
     const pathRoomId = event.pathParameters?.roomId?.trim();
@@ -226,7 +224,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       throw new BadRequestError('roomId must not contain "#"');
     }
 
-    const isMembersSubRoute = rawPath.includes('/members');
+    const routeKey = event.routeKey || '';
+    const isMembersSubRoute =
+      routeKey.includes('/members') ||
+      /^\/(?:(?:dev|prod)\/)?rooms\/[^/]+\/members(?:\/[^/]+)?$/.test(rawPath);
 
     // 5. POST /rooms/{roomId}/members — Add member
     if (method === 'POST' && isMembersSubRoute && !pathUserId) {

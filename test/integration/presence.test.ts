@@ -49,7 +49,7 @@ function makeWsEvent(options: {
   };
 }
 
-describe('Phase 10 Presence, Heartbeat, Typing & Sweeper Integration (DynamoDB Local)', () => {
+describe('Presence, Heartbeat, Typing & Sweeper Integration (DynamoDB Local)', () => {
   let table: string;
 
   beforeAll(async () => {

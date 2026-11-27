@@ -52,13 +52,11 @@ export function decodeCursor(
   const trimmed = cursor.trim();
   if (!trimmed) return undefined;
 
-  // 1. Verify standard Base64 encoding
   const base64Regex = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
   if (!base64Regex.test(trimmed)) {
     throw new BadRequestError('Invalid pagination cursor: not valid base64');
   }
 
-  // 2. Decode and parse JSON
   let parsed: unknown;
   try {
     const jsonStr = Buffer.from(trimmed, 'base64').toString('utf8');
@@ -67,7 +65,6 @@ export function decodeCursor(
     throw new BadRequestError('Invalid pagination cursor: malformed JSON payload');
   }
 
-  // 3. Validate decoded DynamoDB key structure
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new BadRequestError('Invalid pagination cursor: expected key object');
   }
@@ -126,7 +123,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const method = event.requestContext.http.method.toUpperCase();
     const rawPath = event.rawPath || '';
 
-    // Handle CORS preflight if invoked directly
     if (method === 'OPTIONS') {
       return formatHttpResponse(200, {});
     }
@@ -135,7 +131,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       throw new NotFoundError(`Method ${method} not allowed on ${rawPath}`);
     }
 
-    // Require authentication
     const authUser = getHttpAuthenticatedUser(event);
 
     const roomId = event.pathParameters?.roomId?.trim();

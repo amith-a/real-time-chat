@@ -28,14 +28,14 @@ describe('Connect Handler ($connect)', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns 200 with Connected body for valid connection (TABLE_NAME unset)', async () => {
+  it('fails fast with 500 when TABLE_NAME is unset', async () => {
     delete process.env.TABLE_NAME;
     const event = createMockEvent({ connectionId: 'conn-abc' });
     const result = (await connectHandler(event, mockContext, mockCallback)) as ExpectedResponse;
 
-    expect(result).toEqual({
-      statusCode: 200,
-      body: 'Connected',
+    expect(result.statusCode).toBe(500);
+    expect(JSON.parse(result.body)).toEqual({
+      message: 'Internal server error',
     });
   });
 

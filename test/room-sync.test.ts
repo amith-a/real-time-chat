@@ -14,7 +14,7 @@ interface TestMsg {
   body: string;
 }
 
-describe('Phase 11 Client RoomSequenceTracker & Reconnection', () => {
+describe('Client RoomSequenceTracker & Reconnection', () => {
   it('proactively reconnects before the 2-hour API Gateway connection lifetime', () => {
     expect(PROACTIVE_RECONNECT_MS).toBeLessThan(WEBSOCKET_MAX_CONNECTION_MS);
     const connectedAt = 1_000_000;

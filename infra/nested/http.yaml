@@ -342,6 +342,7 @@ Resources:
               - dynamodb:PutItem
               - dynamodb:UpdateItem
               - dynamodb:DeleteItem
+              - dynamodb:ConditionCheckItem
               - dynamodb:Query
             Resource:
               - Fn::ImportValue: !Sub "${Environment}-chat-table-arn"

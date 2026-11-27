@@ -238,7 +238,6 @@ export async function createGroupRoom(input: {
   const now = input.now ?? new Date().toISOString();
   const table = getTableName();
 
-  // Validate that each userId appears only once
   const memberMap = new Map<string, MemberRole>();
   for (const m of members) {
     if (memberMap.has(m.userId)) {
@@ -309,37 +308,39 @@ export async function createGroupRoom(input: {
     }
   }
 
-  // On creation race: verify the room, counter, and all memberships exist (all strongly consistent base-table reads)
-  const [existingRoom, existingCounter, ...existingMembers] = await Promise.all([
+  // On creation race: verify the room and counter exist and immutable creation fields match.
+  // Do not compare mutable membership/memberCount so retries after addMember/removeMember succeed.
+  const [existingRoom, existingCounter] = await Promise.all([
     getRoom(roomId, true),
     getDocClient().send(
       new GetCommand({ TableName: table, Key: roomCounterKey(roomId), ConsistentRead: true }),
     ),
-    ...memberItems.map((m) => getMembership(m.userId, roomId)),
   ]);
 
-  const membersMatch = existingMembers.every((m, i) => m && m.role === memberItems[i].role);
-
-  if (
-    !existingRoom ||
-    !existingCounter.Item ||
-    !membersMatch ||
-    existingRoom.roomType !== 'GROUP' ||
-    existingRoom.createdBy !== createdBy ||
-    (existingRoom.name ?? undefined) !== (name ?? undefined) ||
-    existingRoom.memberCount !== memberMap.size ||
-    existingRoom.membershipHash !== membershipHash
-  ) {
-    throw new InternalServerError('Group room exists but is incomplete or mismatched', {
+  if (!existingRoom || !existingCounter.Item) {
+    throw new InternalServerError('Group room exists but is incomplete', {
       roomId,
       hasMeta: Boolean(existingRoom),
       hasCounter: Boolean(existingCounter.Item),
-      missingMembers: memberItems.filter((_, i) => !existingMembers[i]).map((m) => m.userId),
+    });
+  }
+
+  const normalizedName = name || undefined;
+  if (
+    existingRoom.roomType !== 'GROUP' ||
+    existingRoom.createdBy !== createdBy ||
+    (existingRoom.name ?? undefined) !== normalizedName ||
+    existingRoom.membershipHash !== membershipHash
+  ) {
+    throw new ConflictError('Group room already exists with different creation parameters', {
+      roomId,
     });
   }
 
   return { room: existingRoom, created: false };
 }
+
+export const MAX_GROUP_ROOM_MEMBERS = 100;
 
 export interface AddMemberInput {
   roomId: string;
@@ -377,6 +378,10 @@ export async function addMember(input: AddMemberInput): Promise<AddMemberResult>
     throw new ConflictError(`User ${userId} is already a member of this room`);
   }
 
+  if ((room.memberCount ?? 0) >= MAX_GROUP_ROOM_MEMBERS) {
+    throw new BadRequestError(`Group room cannot exceed ${MAX_GROUP_ROOM_MEMBERS} members`);
+  }
+
   const targetProfile = await getUserProfile(userId, true);
   if (!targetProfile) {
     throw new NotFoundError(`User ${userId} does not exist`);
@@ -397,9 +402,14 @@ export async function addMember(input: AddMemberInput): Promise<AddMemberResult>
       Update: {
         TableName: table,
         Key: roomMetaKey(roomId),
-        UpdateExpression: 'SET memberCount = memberCount + :inc',
-        ConditionExpression: 'attribute_exists(PK)',
-        ExpressionAttributeValues: { ':inc': 1 },
+        UpdateExpression: 'SET memberCount = if_not_exists(memberCount, :zero) + :inc',
+        ConditionExpression:
+          'attribute_exists(PK) AND (attribute_not_exists(memberCount) OR memberCount < :maxMembers)',
+        ExpressionAttributeValues: {
+          ':zero': 0,
+          ':inc': 1,
+          ':maxMembers': MAX_GROUP_ROOM_MEMBERS,
+        },
       },
     },
     {
@@ -428,7 +438,11 @@ export async function addMember(input: AddMemberInput): Promise<AddMemberResult>
         throw new ConflictError(`User ${userId} is already a member of this room`);
       }
       if (conditionFailedAt(reasons, 1)) {
-        throw new NotFoundError(`Room ${roomId} not found`);
+        const currentRoom = await getRoom(roomId, true);
+        if (!currentRoom) {
+          throw new NotFoundError(`Room ${roomId} not found`);
+        }
+        throw new BadRequestError(`Group room cannot exceed ${MAX_GROUP_ROOM_MEMBERS} members`);
       }
       if (reasons.length > 2 && conditionFailedAt(reasons, 2)) {
         throw new ForbiddenError('Only room admins can add members');
@@ -476,6 +490,15 @@ export async function removeMember(input: RemoveMemberInput): Promise<{ success:
   // Ensure room has more than 1 member before removing
   if (room.memberCount !== undefined && room.memberCount <= 1) {
     throw new BadRequestError('Cannot remove the last member of a group room');
+  }
+
+  // Prevent removing or leaving as the last admin of a group room
+  if (targetMembership.role === 'ADMIN') {
+    const members = await listRoomMembers(roomId);
+    const adminCount = members.filter((m) => m.role === 'ADMIN').length;
+    if (adminCount <= 1) {
+      throw new BadRequestError('Cannot remove the last admin of a group room');
+    }
   }
 
   const { PK, SK } = membershipKeys(userId, roomId);

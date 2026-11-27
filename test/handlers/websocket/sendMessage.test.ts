@@ -20,6 +20,8 @@ describe('SendMessage Handler (sendMessage)', () => {
       API_GATEWAY_MANAGEMENT_ENDPOINT: 'https://test-api.execute-api.ap-south-1.amazonaws.com/dev',
     };
     vi.restoreAllMocks();
+    shared.resetConnectionRateLimits();
+    vi.spyOn(repositories, 'isMember').mockResolvedValue(false);
   });
 
   afterEach(() => {
